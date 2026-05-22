@@ -32,10 +32,11 @@ Aprender de forma práctica y progresiva las tecnologías de observabilidad que 
 
 | Componente | Tecnología |
 |---|---|
-| API | Python 3.14 + Flask 3.1.x |
-| Contenedores | Docker Engine + Docker Compose |
+| API | Python 3.14 + Flask 3.1.x + Gunicorn 26.x |
+| Base de datos | PostgreSQL 17 + SQLAlchemy 2.x + psycopg3 |
+| Contenedores | Docker Engine 29.x + Docker Compose v2 |
 | Registry | GitHub Container Registry (GHCR) |
-| CI/CD | GitHub Actions |
+| CI/CD | GitHub Actions (ubuntu-24.04) |
 | Métricas | Prometheus + Grafana |
 | Logs | Loki |
 | Trazas | OpenTelemetry + Tempo |
@@ -61,6 +62,11 @@ Aprender de forma práctica y progresiva las tecnologías de observabilidad que 
 │  │          │──▶│   OTel     │──▶│    Tempo      │ │
 │  │          │   │ Collector  │   │   (trazas)    │ │
 │  └──────────┘   └────────────┘   └───────────────┘ │
+│       │                                             │
+│  ┌────▼─────┐                                       │
+│  │ PostgreSQL│                                      │
+│  │  :5432   │                                       │
+│  └──────────┘                                       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -103,25 +109,37 @@ flask-observability/
 
 ## Fases de aprendizaje
 
-### ✅ Fase 1 — Flask API + Docker + CI/CD
+### ✅ Fase 1 — Flask API + PostgreSQL + Docker + CI/CD
 
-**Objetivo:** Construir la API base, dockerizarla y automatizar la publicación de la imagen en GHCR.
+**Objetivo:** Construir la API base con persistencia real, dockerizarla y automatizar la publicación de la imagen en GHCR.
 
 **Qué se implementa:**
 - API Flask con 3 endpoints: `/health`, `GET /payments`, `POST /payments`
+- Gunicorn como servidor WSGI de producción (2 workers)
+- PostgreSQL 17 como base de datos con persistencia en volumen Docker
+- SQLAlchemy 2.x + psycopg3 como ORM y driver
 - Dockerfile con Python 3.14-slim
 - Pipeline GitHub Actions que construye y publica la imagen en GHCR automáticamente en cada push a `main` que afecte a `app/`
+- Runner fijado a `ubuntu-24.04` para reproducibilidad
 
 **Conceptos clave:**
-- Docker build + image layers
-- GitHub Container Registry (GHCR)
-- Socket activation y Docker Engine nativo vs snap
+- Docker build + image layers + cache
+- Volúmenes Docker para persistencia de datos
+- GitHub Container Registry (GHCR) — imagen pública sin autenticación
+- Tags de imagen: `latest` + `sha-<commit>` para trazabilidad
+- Gunicorn vs servidor de desarrollo Flask
+- psycopg3 vs psycopg2 — driver moderno con soporte nativo async
+- Healthcheck en Docker Compose con `condition: service_healthy`
+- Problema de Docker snap vs Docker Engine nativo en Ubuntu
 
 **Recursos:**
 - [Docker Engine install](https://docs.docker.com/engine/install/ubuntu/)
 - [GitHub Actions — Publishing to GHCR](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
 - [docker/build-push-action](https://github.com/docker/build-push-action)
 - [Flask documentation](https://flask.palletsprojects.com/)
+- [Gunicorn documentation](https://docs.gunicorn.org/)
+- [psycopg3 documentation](https://www.psycopg.org/psycopg3/docs/)
+- [SQLAlchemy 2.x ORM](https://docs.sqlalchemy.org/en/20/)
 
 ---
 
@@ -179,7 +197,7 @@ flask-observability/
 
 ### 🔲 Fase 5 (opcional/avanzada) — Alta disponibilidad de métricas con Thanos
 
-**Cuándo tiene sentido:** cuando hay múltiples instancias de Prometheus (varios clústeres, varios entornos) y se necesita almacenamiento a largo plazo, consultas federadas o alta disponibilidad del sistema de métricas. En un entorno como Voxel con múltiples clústeres OpenShift, Thanos es la pieza que une todo.
+**Cuándo tiene sentido:** cuando hay múltiples instancias de Prometheus (varios clústeres, varios entornos) y se necesita almacenamiento a largo plazo, consultas federadas o alta disponibilidad del sistema de métricas. En un entorno con múltiples clústeres OpenShift, Thanos es la pieza que une todo.
 
 En este proyecto con un solo Prometheus en local **no es necesario**, pero se documenta como referencia para cuando se aplique en un entorno real.
 
@@ -217,10 +235,16 @@ docker compose ps
 docker compose logs -f api
 ```
 
-### Parar el entorno
+### Parar el entorno (conservando datos)
 
 ```bash
 docker compose down
+```
+
+### Parar el entorno eliminando datos
+
+```bash
+docker compose down -v
 ```
 
 ---
@@ -257,8 +281,8 @@ El pipeline de GitHub Actions se dispara en cada push a `main` que modifique arc
 **Flujo:**
 
 ```
-git push → GitHub Actions → docker build → ghcr.io/toninoes/flask-observability/api:latest
-                                         → ghcr.io/toninoes/flask-observability/api:sha-<commit>
+git push → GitHub Actions (ubuntu-24.04) → docker build → ghcr.io/toninoes/flask-observability/api:latest
+                                                        → ghcr.io/toninoes/flask-observability/api:sha-<commit>
 ```
 
 La imagen está disponible públicamente en:
