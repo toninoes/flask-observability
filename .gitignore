@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Datos persistentes de contenedores
+grafana/data/
+prometheus/data/
+
+# Variables de entorno
+.env
