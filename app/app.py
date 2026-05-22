@@ -5,7 +5,9 @@ import uuid
 import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
+
+db_url = os.getenv('DATABASE_URL', '').replace('postgresql://', 'postgresql+psycopg://')
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -28,8 +30,14 @@ class Payment(db.Model):
             'created_at': self.created_at.isoformat()
         }
 
-with app.app_context():
-    db.create_all()
+_tables_created = False
+
+@app.before_request
+def create_tables():
+    global _tables_created
+    if not _tables_created:
+        db.create_all()
+        _tables_created = True
 
 @app.route('/health')
 def health():
