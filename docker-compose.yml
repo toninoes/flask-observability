@@ -1,6 +1,6 @@
 services:
   api:
-    build: ./app
+    image: ghcr.io/toninoes/flask-observability/api:latest
     container_name: payment-api
     ports:
       - "5000:5000"
