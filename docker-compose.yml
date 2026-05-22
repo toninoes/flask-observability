@@ -4,4 +4,28 @@ services:
     container_name: payment-api
     ports:
       - "5000:5000"
+    environment:
+      - DATABASE_URL=postgresql://payments:payments@db:5432/paymentsdb
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    container_name: payment-db
+    environment:
+      - POSTGRES_USER=payments
+      - POSTGRES_PASSWORD=payments
+      - POSTGRES_DB=paymentsdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d paymentsdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
