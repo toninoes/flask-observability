@@ -5,7 +5,29 @@ de pagos en FastAPI y desplegado en local con Docker.
 
 ---
 
-## 🎯 Objetivo
+## Índice
+
+1. [Objetivo](#1-objetivo)
+2. [Arquitectura final](#2-arquitectura-final)
+3. [Requisitos del sistema](#3-requisitos-del-sistema)
+4. [Estructura del proyecto](#4-estructura-del-proyecto)
+5. [Itinerario de fases](#5-itinerario-de-fases)
+   - [Fase 1: La API](#-fase-1-la-api)
+   - [Fase 2: Métricas con Prometheus y Grafana](#-fase-2-métricas-con-prometheus-y-grafana)
+   - [Fase 3: Logs estructurados con Loki](#-fase-3-logs-estructurados-con-loki)
+   - [Fase 4: Trazas distribuidas con Tempo y OpenTelemetry](#-fase-4-trazas-distribuidas-con-tempo-y-opentelemetry)
+   - [Fase 5: OTEL Collector, el router central](#-fase-5-otel-collector-el-router-central)
+   - [Fase 6: Retención larga con Thanos y MinIO](#-fase-6-retención-larga-con-thanos-y-minio)
+6. [Correlación entre las tres señales](#6-correlación-entre-las-tres-señales)
+7. [Métricas expuestas por la API](#7-métricas-expuestas-por-la-api)
+8. [Campos de log](#8-campos-de-log)
+9. [Notas importantes](#9-notas-importantes)
+10. [Dependabot](#10-dependabot)
+11. [Referencias](#11-referencias)
+
+---
+
+## 🎯 1. Objetivo
 
 Aprender las tecnologías del stack de observabilidad de producción de forma incremental,
 fase a fase, con una aplicación real como hilo conductor.
@@ -16,7 +38,7 @@ trazas, retención histórica y visualización.
 
 ---
 
-## 🏗️ Arquitectura final
+## 🏗️ 2. Arquitectura final
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -54,17 +76,17 @@ trazas, retención histórica y visualización.
 
 ---
 
-## 🖥️ Requisitos del sistema
+## 🖥️ 3. Requisitos del sistema
 
-| Recurso | Mínimo |
-|---|---|
-| SO | Ubuntu 22.04+ |
-| RAM | 8 GB |
-| CPU | 4 cores |
-| Disco | 10 GB libres |
-| Docker Engine | 24+ |
-| Docker Compose | v2 (`docker compose`) |
-| Python | 3.12+ |
+| Recurso | Mínimo | Recomendado |
+|---|---|---|
+| SO | Ubuntu 22.04+ | Ubuntu 24.04 |
+| RAM | 8 GB (Fases 1-4) | 16 GB (stack completo Fase 6) |
+| CPU | 4 cores | 6+ cores |
+| Disco | 10 GB libres | 20 GB libres |
+| Docker Engine | 24+ | última estable |
+| Docker Compose | v2 (`docker compose`) | última estable |
+| Python | 3.12+ | 3.13 |
 
 ```bash
 # Verificar antes de empezar
@@ -75,7 +97,7 @@ python3 --version
 
 ---
 
-## 📁 Estructura del proyecto
+## 📁 4. Estructura del proyecto
 
 ```
 fastapi-observability/
@@ -83,6 +105,7 @@ fastapi-observability/
 ├── app/
 │   ├── app.py                    # FastAPI app (endpoints, modelos, métricas)
 │   ├── Dockerfile
+│   ├── gunicorn.conf.py
 │   ├── requirements.txt
 │   ├── requirements-dev.txt
 │   └── tests/
@@ -116,7 +139,9 @@ fastapi-observability/
 │   └── load_test.sh              # Genera tráfico simulado
 │
 ├── docker-compose.yml            # Crece fase a fase
-├── .github/workflows/ci.yml
+├── .github/
+│   ├── dependabot.yml
+│   └── workflows/ci.yml
 ├── .gitignore
 ├── LICENSE
 └── README.md
@@ -124,7 +149,7 @@ fastapi-observability/
 
 ---
 
-## 🗺️ Itinerario de fases
+## 🗺️ 5. Itinerario de fases
 
 ---
 
@@ -337,7 +362,7 @@ Prometheus recoge estas métricas cada 15 segundos haciendo scraping
 al endpoint `/metrics` que expone la app. Grafana las visualiza.
 
 **Vídeo previo recomendado:**
-YouTube -> `Prometheus Grafana Docker Compose tutorial` -> canal **TechWorld with Nana**
+YouTube -> canal **TechWorld with Nana** -> https://www.youtube.com/@TechWorldwithNana/search?query=Prometheus+Grafana
 
 **Qué se hace:**
 - Añadir `prometheus-fastapi-instrumentator` a la app, que expone `/metrics` automáticamente
@@ -496,7 +521,7 @@ FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
 
 ---
 
-## 🔗 Correlación entre las tres señales
+## 🔗 6. Correlación entre las tres señales
 
 El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
@@ -512,7 +537,7 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
-## 📊 Métricas expuestas por la API (Fase 2 en adelante)
+## 📊 7. Métricas expuestas por la API (Fase 2 en adelante)
 
 | Métrica | Tipo | Descripción |
 |---|---|---|
@@ -524,7 +549,7 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
-## 🏷️ Campos de log (Fase 3 en adelante)
+## 🏷️ 8. Campos de log (Fase 3 en adelante)
 
 ```json
 {
@@ -545,15 +570,34 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
-## ⚠️ Notas importantes
+## ⚠️ 9. Notas importantes
 
 - **Cada fase es acumulativa**: el `docker-compose.yml` crece en cada fase añadiendo servicios.
-- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 8 GB del equipo.
+- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 16 GB del equipo.
 - **Thanos Compact se omite en local**: solo tiene sentido con semanas de datos históricos reales.
 
 ---
 
-## 📚 Referencias
+## 🤖 10. Dependabot
+
+Dependabot revisa automáticamente las dependencias del proyecto cada semana y abre
+Pull Requests cuando hay versiones nuevas disponibles. Está configurado en
+`.github/dependabot.yml` y cubre cuatro ecosistemas:
+
+| Ecosistema | Qué monitoriza |
+|---|---|
+| `pip` | `app/requirements.txt` y `requirements-dev.txt` |
+| `docker` (app) | Imagen base del `app/Dockerfile` |
+| `docker` (raíz) | Imágenes del `docker-compose.yml` |
+| `github-actions` | Actions del workflow de CI |
+
+Cada semana Dependabot abre PRs automáticos con las actualizaciones disponibles.
+El test gate del CI se ejecuta sobre cada PR, de forma que solo se mergea
+lo que pasa los tests.
+
+---
+
+## 📚 11. Referencias
 
 | Herramienta | Documentación |
 |---|---|
