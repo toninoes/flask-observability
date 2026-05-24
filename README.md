@@ -10,9 +10,9 @@ construido sobre una API de pagos en FastAPI y desplegado íntegramente en local
 Aprender las tecnologías del stack de observabilidad de producción de forma incremental,
 fase a fase, con una aplicación real como hilo conductor.
 
-El punto de partida es una API de pagos ya existente en Flask. La migraremos a FastAPI
-y sobre ella iremos añadiendo, capa a capa, todas las herramientas de observabilidad:
-métricas, logs, trazas, retención histórica y visualización.
+El punto de partida es una API de pagos construida en FastAPI. Sobre ella iremos
+añadiendo, capa a capa, todas las herramientas de observabilidad: métricas, logs,
+trazas, retención histórica y visualización.
 
 Al finalizar tendrás en local exactamente la misma arquitectura que se despliega
 en OpenShift con Nutanix Objects como storage.
@@ -128,16 +128,15 @@ flask-observability/
 
 ### 🟢 Fase 1 — La API
 
-**Objetivo:** migrar la app existente de Flask a FastAPI y dejarla
-funcionando en local con Docker y PostgreSQL. Esta fase no toca nada
-de observabilidad — es la base sobre la que construiremos todo lo demás.
+**Objetivo:** construir la API de pagos en FastAPI y dejarla funcionando
+en local con Docker y PostgreSQL. Esta fase no toca nada de observabilidad
+— es la base sobre la que construiremos todo lo demás.
 
 **Qué se hace:**
-- Migrar `app.py` de Flask a FastAPI
-- Añadir modelos Pydantic para request y response
-- Validación automática de datos de entrada
+- Crear `app.py` con FastAPI y Uvicorn
+- Modelos Pydantic para request y response con validación automática
 - Documentación OpenAPI gratuita en `/docs`
-- Actualizar `requirements.txt` y `Dockerfile`
+- PostgreSQL como base de datos con SQLAlchemy
 - Arrancar con `docker compose up`
 
 **Al terminar esta fase tendrás:**
