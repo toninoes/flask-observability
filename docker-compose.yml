@@ -1,15 +1,17 @@
 services:
   api:
-    image: ghcr.io/toninoes/flask-observability/api:latest
+    build:
+      context: ./app
     container_name: payment-api
     ports:
-      - "5000:5000"
+      - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://payments:payments@db:5432/paymentsdb
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: 256m
 
   db:
     image: postgres:17-alpine
@@ -26,6 +28,8 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    mem_limit: 256m
 
 volumes:
   postgres_data:
+  
