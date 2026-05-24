@@ -15,14 +15,14 @@ services:
     mem_limit: 256m
 
   db:
-    image: postgres:17-alpine
+    image: postgres:18-alpine
     container_name: payment-db
     environment:
       - POSTGRES_USER=payments
       - POSTGRES_PASSWORD=payments
       - POSTGRES_DB=paymentsdb
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payments -d paymentsdb"]
       interval: 5s
