@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import create_engine, Column, String, Numeric, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session
@@ -59,6 +60,21 @@ class PaymentsListResponse(BaseModel):
     payments: list[PaymentResponse]
     total: int
 
+# ---------------------------------------------------------------------------
+# Custom metrics
+# ---------------------------------------------------------------------------
+payments_created_total = Counter(
+    "payments_created_total",
+    "Total de pagos creados exitosamente",
+    ["currency"],
+)
+
+payments_amount_euros = Histogram(
+    "payments_amount_euros",
+    "Distribución de importes de pago",
+    ["currency"],
+    buckets=[10, 50, 100, 500, 1000, 5000, 10000],
+)
 
 # ---------------------------------------------------------------------------
 # App
@@ -100,5 +116,7 @@ def create_payment(payment: PaymentRequest):
         session.add(new_payment)
         session.commit()
         session.refresh(new_payment)
+        payments_created_total.labels(currency=payment.currency).inc()
+        payments_amount_euros.labels(currency=payment.currency).observe(new_payment.amount)
         return PaymentResponse.model_validate(new_payment)
  
