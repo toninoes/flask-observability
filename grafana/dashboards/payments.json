@@ -1,0 +1,69 @@
+{
+  "title": "Payment API",
+  "uid": "payment-api-v1",
+  "schemaVersion": 38,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests por segundo",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total[1m])) by (handler)",
+        "legendFormat": "{{handler}}"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Tasa de errores 5xx",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{status=~\"5..\"}[1m]))",
+        "legendFormat": "errores/seg"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "Latencia p50 / p95 / p99",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Pagos creados por segundo",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [{
+        "expr": "sum(rate(payments_created_total[1m])) by (currency)",
+        "legendFormat": "{{currency}}"
+      }]
+    },
+    {
+      "id": 5,
+      "title": "Distribución de importes (p95)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum(rate(payments_amount_euros_bucket[1m])) by (le, currency))",
+        "legendFormat": "p95 {{currency}}"
+      }]
+    }
+  ]
+}
+
