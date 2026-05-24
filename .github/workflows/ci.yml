@@ -60,7 +60,7 @@ jobs:
           echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| Python | 3.13 |" >> $GITHUB_STEP_SUMMARY
-          echo "| PostgreSQL | 17-alpine |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostgreSQL | 18-alpine |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Salida de pytest" >> $GITHUB_STEP_SUMMARY

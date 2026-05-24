@@ -369,12 +369,51 @@ al endpoint `/metrics` que expone la app. Grafana las visualiza.
 **Vídeo previo recomendado:**
 YouTube -> canal **TechWorld with Nana** -> https://www.youtube.com/@TechWorldwithNana/search?query=Prometheus+Grafana
 
+**Tipos de métricas:**
+
+| Tipo | Descripción | Ejemplo en pagos |
+|---|---|---|
+| Counter | Solo sube, nunca baja. Se resetea al reiniciar | Pagos creados, requests totales |
+| Gauge | Sube y baja libremente, refleja estado actual | Workers activos, RAM usada |
+| Histogram | Distribución de valores, permite calcular percentiles | Tiempo de respuesta, importes |
+
 **Qué se hace:**
-- Añadir `prometheus-fastapi-instrumentator` a la app, que expone `/metrics` automáticamente
-- Añadir métricas de negocio custom: `payments_created_total`, `payments_amount_euros`
-- Levantar Prometheus con su config de scraping
-- Levantar Grafana con datasource y dashboard pre-provisionados
-- Aprender PromQL básico: `rate()`, `histogram_quantile()`
+- Añadir `prometheus-fastapi-instrumentator` a `app.py`, que expone `/metrics` automáticamente con métricas HTTP
+- Añadir métricas custom de negocio con `prometheus-client`:
+  - `payments_created_total` (Counter) con etiqueta `currency`
+  - `payments_amount_euros` (Histogram) con buckets por importe y etiqueta `currency`
+- Crear `prometheus/prometheus.yml` con la configuración de scraping cada 15s apuntando a `api:8000`
+- Crear provisioning de Grafana: datasource Prometheus y dashboard con 5 paneles pre-configurados
+- Añadir Prometheus y Grafana al `docker-compose.yml`
+- Verificar el target en Prometheus targets y ver métricas en Grafana
+
+**Ficheros nuevos:**
+```
+prometheus/
+└── prometheus.yml
+grafana/
+├── provisioning/
+│   ├── datasources/
+│   │   └── prometheus.yml
+│   └── dashboards/
+│       └── dashboard.yml
+└── dashboards/
+    └── payments.json
+```
+
+**Bugs encontrados y corregidos durante la implementación:**
+- `payments_amount_euros.observe()` recibía un `Decimal` de SQLAlchemy en vez de `float` -> fix: `float(new_payment.amount)`
+- El CI marcaba verde aunque pytest fallaba porque `| tee` ocultaba el exit code de pytest -> fix: `set -o pipefail`
+
+**Generar tráfico para ver los paneles:**
+```bash
+for i in {1..20}; do
+  curl -s -X POST http://localhost:8000/payments \
+    -H "Content-Type: application/json" \
+    -d "{\"amount\": $((RANDOM % 1000 + 1)).99, \"currency\": \"EUR\"}" > /dev/null
+  sleep 0.5
+done
+```
 
 **Al terminar esta fase tendrás:**
 ```
@@ -387,8 +426,22 @@ FastAPI (/metrics) <-- scraping cada 15s -- Prometheus
 | Servicio | URL |
 |---|---|
 | Métricas raw | http://localhost:8000/metrics |
-| Prometheus | http://localhost:9090 |
+| Prometheus targets | http://localhost:9090/targets |
+| Prometheus query | http://localhost:9090 |
 | Grafana | http://localhost:3000 (admin/admin) |
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Prometheus docs | https://prometheus.io/docs/introduction/overview/ |
+| PromQL basics | https://prometheus.io/docs/prometheus/latest/querying/basics/ |
+| Grafana dashboards | https://grafana.com/docs/grafana/latest/dashboards/ |
+| prometheus-fastapi-instrumentator | https://github.com/trallnag/prometheus-fastapi-instrumentator |
+
+YouTube:
+- Canal **TechWorld with Nana** (Prometheus) -> https://www.youtube.com/@TechWorldwithNana/search?query=Prometheus+Grafana
+- Canal **That DevOps Guy** (Prometheus) -> https://www.youtube.com/@MarcelDempers/search?query=prometheus
 
 ---
 
