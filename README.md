@@ -44,8 +44,8 @@ trazas, retención histórica y visualización.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        FastAPI Payment API                       │
-│              GET /health · GET /payments · POST /payments        │
+│                        FastAPI Payment API                      │
+│              GET /health · GET /payments · POST /payments       │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                     ┌────────▼────────┐
