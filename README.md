@@ -1,7 +1,7 @@
-# 🔭 Observability Lab — FastAPI + OpenTelemetry Stack
+# 🔭 Observability Lab: FastAPI + OpenTelemetry Stack
 
-Proyecto de aprendizaje progresivo de observabilidad en entornos OpenShift/Kubernetes,
-construido sobre una API de pagos en FastAPI y desplegado íntegramente en local con Docker.
+Proyecto de aprendizaje progresivo de observabilidad construido sobre una API
+de pagos en FastAPI y desplegado en local con Docker.
 
 ---
 
@@ -13,9 +13,6 @@ fase a fase, con una aplicación real como hilo conductor.
 El punto de partida es una API de pagos construida en FastAPI. Sobre ella iremos
 añadiendo, capa a capa, todas las herramientas de observabilidad: métricas, logs,
 trazas, retención histórica y visualización.
-
-Al finalizar tendrás en local exactamente la misma arquitectura que se despliega
-en OpenShift con Nutanix Objects como storage.
 
 ---
 
@@ -39,9 +36,9 @@ en OpenShift con Nutanix Objects como storage.
                   │            │        │
            ┌──────▼────────────▼────────▼──────┐
            │             MinIO (S3)              │
-           │  simula Nutanix Objects             │
+           │  object storage S3-compatible       │
            │  bloques Thanos · chunks Loki       │
-           │  datos Tempo — retención larga      │
+           │  datos Tempo (retención larga)      │
            └──────────────────────┬─────────────┘
                                   │
                     ┌─────────────▼──────────────┐
@@ -81,12 +78,17 @@ python3 --version
 ## 📁 Estructura del proyecto
 
 ```
-flask-observability/
+fastapi-observability/
 │
 ├── app/
-│   ├── app.py                    # FastAPI app — endpoints + modelos + métricas
+│   ├── app.py                    # FastAPI app (endpoints, modelos, métricas)
 │   ├── Dockerfile
-│   └── requirements.txt
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   └── tests/
+│       ├── __init__.py
+│       ├── conftest.py
+│       └── test_api.py
 │
 ├── prometheus/
 │   └── prometheus.yml            # Config scraping (Fase 2)
@@ -126,17 +128,18 @@ flask-observability/
 
 ---
 
-### 🟢 Fase 1 — La API
+### 🟢 Fase 1: La API
 
 **Objetivo:** construir la API de pagos en FastAPI y dejarla funcionando
-en local con Docker y PostgreSQL. Esta fase no toca nada de observabilidad
-— es la base sobre la que construiremos todo lo demás.
+en local con Docker y PostgreSQL. Esta fase no toca nada de observabilidad,
+es la base sobre la que construiremos todo lo demás.
 
 **Qué se hace:**
 - Crear `app.py` con FastAPI y Uvicorn
 - Modelos Pydantic para request y response con validación automática
 - Documentación OpenAPI gratuita en `/docs`
 - PostgreSQL como base de datos con SQLAlchemy
+- Tests con pytest y test gate en el pipeline de CI
 - Arrancar con `docker compose up`
 
 **Al terminar esta fase tendrás:**
@@ -153,6 +156,81 @@ PostgreSQL
 | API health | http://localhost:8000/health |
 | API pagos | http://localhost:8000/payments |
 
+**Para profundizar antes de continuar:**
+
+| Recurso | Enlace | Para qué sirve |
+|---|---|---|
+| FastAPI Tutorial oficial | https://fastapi.tiangolo.com/tutorial/ | Conceptos base: path params, query params, body, response models |
+| Pydantic docs | https://docs.pydantic.dev | Validación y modelos de datos |
+| Testing en FastAPI | https://fastapi.tiangolo.com/tutorial/testing/ | Tests con `pytest` y `httpx` |
+| SQLAlchemy 2.0 | https://docs.sqlalchemy.org/en/20/ | ORM y capa de base de datos |
+| GitHub Actions docs | https://docs.github.com/en/actions | Workflows, jobs, steps, servicios |
+
+YouTube recomendado:
+- `FastAPI tutorial for beginners` -> canal **ArjanCodes** (buenas prácticas)
+- `GitHub Actions tutorial` -> canal **TechWorld with Nana** (CI/CD desde cero)
+
+**Tests con pytest:**
+
+Los tests viven en `app/tests/` y usan `TestClient` de FastAPI junto con una
+base de datos PostgreSQL de test independiente de la de desarrollo.
+
+Las dependencias de test están separadas en `requirements-dev.txt` para que
+no entren en la imagen Docker de producción:
+
+```
+pytest==9.0.3
+httpx==0.28.1
+```
+
+Ejecutar tests en local:
+
+```bash
+cd app
+DATABASE_URL=postgresql://payments:payments@localhost:5432/paymentsdb_test \
+  pytest tests/ -v
+```
+
+Casos cubiertos:
+
+| Test | Qué verifica |
+|---|---|
+| `test_health` | Respuesta correcta del healthcheck |
+| `test_get_payments` | Estructura del listado: `payments` y `total` |
+| `test_create_payment_valid` | Flujo completo: 201, campos presentes y valores correctos |
+| `test_create_payment_negative_amount` | Importe negativo -> 422 |
+| `test_create_payment_zero_amount` | Importe cero -> 422 (límite estricto `gt=0`) |
+| `test_create_payment_invalid_currency` | Moneda fuera de patrón `^[A-Z]{3}$` -> 422 |
+| `test_create_payment_missing_amount` | Campo obligatorio ausente -> 422 |
+| `test_get_payments_after_creation` | El total del listado incrementa tras crear un pago |
+
+**Pipeline CI con test gate:**
+
+El workflow de GitHub Actions en `.github/workflows/ci.yml` tiene dos jobs:
+
+```
+test -> build-and-push
+```
+
+El job `test` levanta PostgreSQL como servicio, instala dependencias y ejecuta
+pytest. El job `build-and-push` tiene `needs: test`, de forma que si los tests
+fallan la imagen nunca se construye ni se publica en GHCR.
+
+```yaml
+jobs:
+  test:
+    services:
+      postgres:           # PostgreSQL efímero solo para los tests
+        image: postgres:17-alpine
+    steps:
+      - run: pytest tests/ -v
+
+  build-and-push:
+    needs: test           # bloquea el build si test falla
+    steps:
+      - build y push a GHCR
+```
+
 **Pruebas de validación:**
 
 ```bash
@@ -167,17 +245,17 @@ curl -X POST http://localhost:8000/payments \
 # Listar pagos
 curl http://localhost:8000/payments
 
-# Importe negativo → 422 Unprocessable Content
+# Importe negativo -> 422 Unprocessable Content
 curl -i -X POST http://localhost:8000/payments \
   -H "Content-Type: application/json" \
   -d '{"amount": -50, "currency": "EUR"}'
 
-# Moneda inválida → 422 Unprocessable Content
+# Moneda inválida -> 422 Unprocessable Content
 curl -i -X POST http://localhost:8000/payments \
   -H "Content-Type: application/json" \
   -d '{"amount": 100, "currency": "eurosss"}'
 
-# Sin importe → 422 Unprocessable Content
+# Sin importe -> 422 Unprocessable Content
 curl -i -X POST http://localhost:8000/payments \
   -H "Content-Type: application/json" \
   -d '{"currency": "EUR"}'
@@ -185,20 +263,20 @@ curl -i -X POST http://localhost:8000/payments \
 
 ---
 
-### 🔵 Fase 2 — Métricas con Prometheus y Grafana
+### 🔵 Fase 2: Métricas con Prometheus y Grafana
 
 **Concepto:** las métricas son la señal más básica de observabilidad.
-Responden a preguntas como: ¿cuántas peticiones por segundo recibo?
-¿cuánto tardan? ¿cuántos pagos se crean por minuto? ¿hay errores?
+Responden a preguntas como: cuántas peticiones por segundo recibo,
+cuánto tardan, cuántos pagos se crean por minuto, hay errores.
 
 Prometheus recoge estas métricas cada 15 segundos haciendo scraping
 al endpoint `/metrics` que expone la app. Grafana las visualiza.
 
 **Vídeo previo recomendado:**
-YouTube → `Prometheus Grafana Docker Compose tutorial` → canal **TechWorld with Nana**
+YouTube -> `Prometheus Grafana Docker Compose tutorial` -> canal **TechWorld with Nana**
 
 **Qué se hace:**
-- Añadir `prometheus-fastapi-instrumentator` a la app — expone `/metrics` automáticamente
+- Añadir `prometheus-fastapi-instrumentator` a la app, que expone `/metrics` automáticamente
 - Añadir métricas de negocio custom: `payments_created_total`, `payments_amount_euros`
 - Levantar Prometheus con su config de scraping
 - Levantar Grafana con datasource y dashboard pre-provisionados
@@ -206,7 +284,7 @@ YouTube → `Prometheus Grafana Docker Compose tutorial` → canal **TechWorld w
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI (/metrics) ←── scraping cada 15s ── Prometheus
+FastAPI (/metrics) <-- scraping cada 15s -- Prometheus
                                                   ↕
                                               Grafana
 ```
@@ -220,7 +298,7 @@ FastAPI (/metrics) ←── scraping cada 15s ── Prometheus
 
 ---
 
-### 🟡 Fase 3 — Logs estructurados con Loki
+### 🟡 Fase 3: Logs estructurados con Loki
 
 **Concepto:** los logs son la señal más detallada. Un log bien estructurado
 te dice exactamente qué pasó, cuándo, en qué contexto y con qué datos.
@@ -229,10 +307,10 @@ buscar a escala. La solución es emitirlos en JSON (logs estructurados)
 e indexarlos con Loki para poder buscar con LogQL.
 
 **Vídeo previo recomendado:**
-YouTube → `Grafana Loki Docker Compose tutorial` → canal **Grafana** oficial
+YouTube -> `Grafana Loki Docker Compose tutorial` -> canal **Grafana** oficial
 
 **Qué se hace:**
-- Añadir `structlog` a la app — logging estructurado en JSON
+- Añadir `structlog` a la app para logging estructurado en JSON
 - Cada log incluye: `payment_id`, `endpoint`, `status_code`, `duration_ms`
 - Levantar Loki como backend de logs
 - Levantar Promtail para recoger logs de contenedores Docker
@@ -253,25 +331,25 @@ FastAPI (JSON logs)
 | Servicio | URL |
 |---|---|
 | Loki (health) | http://localhost:3100/ready |
-| Grafana (Loki) | http://localhost:3000 → Explore → Loki |
+| Grafana (Loki) | http://localhost:3000 -> Explore -> Loki |
 
 ---
 
-### 🟣 Fase 4 — Trazas distribuidas con Tempo y OpenTelemetry
+### 🟣 Fase 4: Trazas distribuidas con Tempo y OpenTelemetry
 
 **Concepto:** una traza muestra el recorrido completo de una petición
 desde que entra hasta que sale. En un sistema con microservicios es
 la única forma de saber en qué paso exacto se perdió tiempo o falló algo.
-Cada traza está formada por spans — uno por operación (validar, consultar BD, responder).
+Cada traza está formada por spans, uno por operación (validar, consultar BD, responder).
 
 OpenTelemetry es el estándar CNCF que instrumenta la app para generar esas trazas.
 Tempo las almacena. Grafana las visualiza.
 
 **Vídeo previo recomendado:**
-YouTube → `OpenTelemetry Python FastAPI tutorial` → canal **opentelemetry** oficial
+YouTube -> `OpenTelemetry Python FastAPI tutorial` -> canal **opentelemetry** oficial
 
 **Qué se hace:**
-- Añadir SDK de OpenTelemetry a la app — auto-instrumentación de FastAPI
+- Añadir SDK de OpenTelemetry a la app con auto-instrumentación de FastAPI
 - Spans custom: `payment.validate`, `payment.process`, `payment.persist`
 - Levantar Tempo como backend de trazas
 - Ver una traza completa en Grafana y navegar entre sus spans
@@ -290,64 +368,60 @@ FastAPI (spans OTEL)
 | Servicio | URL |
 |---|---|
 | Tempo (health) | http://localhost:3200/ready |
-| Grafana (Tempo) | http://localhost:3000 → Explore → Tempo |
+| Grafana (Tempo) | http://localhost:3000 -> Explore -> Tempo |
 
 ---
 
-### 🟠 Fase 5 — OTEL Collector: el router central
+### 🟠 Fase 5: OTEL Collector, el router central
 
 **Concepto:** en producción no se envían métricas, logs y trazas
 directamente a sus backends. Todo pasa por un Collector centralizado
-que recibe, normaliza, enriquece y enruta cada señal. Es exactamente
-el bloque central del diagrama de arquitectura de OpenShift.
+que recibe, normaliza, enriquece y enruta cada señal.
 
 **Qué se hace:**
 - Levantar OpenTelemetry Collector
-- Configurar pipelines: receivers → processors → exporters
-- La app solo habla con el Collector — él decide adónde va cada señal
+- Configurar pipelines: receivers -> processors -> exporters
+- La app solo habla con el Collector, que decide adónde va cada señal
 - Reemplazar Promtail por el Collector para logs
 - Añadir processors: `batch`, `memory_limiter`, enriquecimiento con metadatos
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI → OTEL Collector ──→ Prometheus
-                         ──→ Loki
-                         ──→ Tempo
+FastAPI -> OTEL Collector --> Prometheus
+                         --> Loki
+                         --> Tempo
                                 ↓
                              Grafana
 ```
 
 ---
 
-### 🔴 Fase 6 — Retención larga con Thanos y MinIO
+### 🔴 Fase 6: Retención larga con Thanos y MinIO
 
 **Concepto:** Prometheus solo retiene datos 7-15 días. Para retención
-histórica de meses o años en producción se usa Thanos con object storage.
-
-MinIO es S3-compatible al 100% — es exactamente lo mismo que Nutanix Objects
-que usas en Voxel, cambiando solo el endpoint y las credenciales. Todo lo
-que configures aquí funciona en producción sin cambios.
+histórica de meses o años en producción se usa Thanos con object storage S3-compatible.
+MinIO actúa como ese object storage en local.
 
 **Vídeo previo recomendado:**
-YouTube → `Thanos Prometheus long term storage tutorial` → canal **That DevOps Guy**
+YouTube -> `Thanos Prometheus long term storage tutorial` -> canal **That DevOps Guy**
 
 **Qué se hace:**
 - Levantar MinIO con buckets `thanos`, `loki`, `tempo`
 - Thanos Sidecar junto a Prometheus: sube bloques TSDB a MinIO cada 2h
 - Thanos Store Gateway: permite consultar datos históricos en MinIO
-- Thanos Query: federa Prometheus local + datos históricos
+- Thanos Query: federa Prometheus local con datos históricos
 - Loki y Tempo también persisten en MinIO
 - Grafana apunta a Thanos Query en vez de Prometheus directamente
 
 **Al terminar esta fase tendrás el stack completo:**
 ```
-FastAPI → OTEL Collector → Prometheus ←→ Thanos Sidecar ──→ MinIO
-                        → Loki ──────────────────────────→ MinIO
-                        → Tempo ─────────────────────────→ MinIO
-                                   Thanos Store Gateway ←─ MinIO
-                                   Thanos Query
-                                        ↓
-                                     Grafana
+FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
+                         -> Loki -----------------------------> MinIO
+                         -> Tempo ----------------------------> MinIO
+                                    Thanos Store Gateway <----- MinIO
+                                    Thanos Query
+                                         ↓
+                                      Grafana
 ```
 
 **URLs añadidas:**
@@ -363,16 +437,14 @@ FastAPI → OTEL Collector → Prometheus ←→ Thanos Sidecar ──→ MinIO
 El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ```
-1. Alerta en Prometheus → CPU alta en /payments
+1. Alerta en Prometheus -> CPU alta en /payments
            ↓
-2. Grafana → buscar logs de ese timestamp en Loki
+2. Grafana -> buscar logs de ese timestamp en Loki
            ↓
-3. El log contiene trace_id → abrir esa traza en Tempo
+3. El log contiene trace_id -> abrir esa traza en Tempo
            ↓
-4. La traza muestra qué span tardó → causa raíz identificada
+4. La traza muestra qué span tardó -> causa raíz identificada
 ```
-
-Este es exactamente el flujo del diagrama inferior de tu arquitectura de observabilidad.
 
 ---
 
@@ -411,11 +483,9 @@ Este es exactamente el flujo del diagrama inferior de tu arquitectura de observa
 
 ## ⚠️ Notas importantes
 
-- **MinIO = Nutanix Objects** a efectos prácticos — misma API S3, misma config.
-  Solo cambia el endpoint y las credenciales en producción.
-- **Thanos Compact se omite en local** — solo tiene sentido con semanas de datos históricos.
-- **Cada fase es acumulativa** — el `docker-compose.yml` crece en cada fase añadiendo servicios.
-- **Todos los contenedores tienen `mem_limit`** — para no comprometer los 8 GB del equipo.
+- **Cada fase es acumulativa**: el `docker-compose.yml` crece en cada fase añadiendo servicios.
+- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 8 GB del equipo.
+- **Thanos Compact se omite en local**: solo tiene sentido con semanas de datos históricos reales.
 
 ---
 
