@@ -315,7 +315,7 @@ jobs:
   test:
     services:
       postgres:           # PostgreSQL efímero solo para los tests
-        image: postgres:17-alpine
+        image: postgres:18-alpine
     steps:
       - run: pytest tests/ -v
 
