@@ -49,6 +49,7 @@ jobs:
           DATABASE_URL: postgresql://payments:payments@localhost:5432/paymentsdb_test
         run: |
           cd app
+          set -o pipefail
           pytest tests/ -v 2>&1 | tee /tmp/pytest-output.txt
 
       - name: Test summary

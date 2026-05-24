@@ -117,6 +117,6 @@ def create_payment(payment: PaymentRequest):
         session.commit()
         session.refresh(new_payment)
         payments_created_total.labels(currency=payment.currency).inc()
-        payments_amount_euros.labels(currency=payment.currency).observe(new_payment.amount)
+        payments_amount_euros.labels(currency=payment.currency).observe(float(new_payment.amount))
         return PaymentResponse.model_validate(new_payment)
  
