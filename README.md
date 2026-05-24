@@ -157,6 +157,24 @@ PostgreSQL
 | API health | http://localhost:8000/health |
 | API pagos | http://localhost:8000/payments |
 
+**Entorno virtual local (solo para el IDE):**
+
+Los paquetes se instalan dentro de Docker, por lo que VS Code y Pylance no los
+encuentran por defecto y muestra warnings de imports no resueltos. La solución
+es crear un entorno virtual local únicamente para que el IDE tenga contexto:
+
+```bash
+cd app
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Después en VS Code: `Ctrl+Shift+P` -> `Python: Select Interpreter` -> seleccionar
+el intérprete que apunta a `app/.venv/bin/python`.
+
+El directorio `.venv` ya está en `.gitignore` y no se sube al repositorio.
+
 **Servidor de producción: Gunicorn + Uvicorn workers**
 
 FastAPI necesita un servidor ASGI para funcionar. Hay varias opciones y la elección
@@ -195,7 +213,12 @@ Para profundizar:
 | Gunicorn settings | https://docs.gunicorn.org/en/stable/settings.html |
 | FastAPI server workers | https://fastapi.tiangolo.com/deployment/server-workers/ |
 
-YouTube -> `FastAPI production deployment Gunicorn Docker` -> canal **ArjanCodes**
+YouTube:
+- **ArjanCodes** (FastAPI producción) -> https://www.youtube.com/@ArjanCodes/search?query=fastapi+production
+- **ArjanCodes** (SQLAlchemy) -> https://www.youtube.com/@ArjanCodes/search?query=sqlalchemy
+- **Corey Schafer** (SQLAlchemy, fundamentos) -> https://www.youtube.com/@coreyms/search?query=sqlalchemy
+- **TechWorld with Nana** (FastAPI + Docker) -> https://www.youtube.com/@TechWorldwithNana/search?query=fastapi+docker
+- **That DevOps Guy** (Python en producción) -> https://www.youtube.com/@MarcelDempers/search?query=python
 
 **Para profundizar antes de continuar:**
 
@@ -208,8 +231,8 @@ YouTube -> `FastAPI production deployment Gunicorn Docker` -> canal **ArjanCodes
 | GitHub Actions docs | https://docs.github.com/en/actions | Workflows, jobs, steps, servicios |
 
 YouTube recomendado:
-- `FastAPI tutorial for beginners` -> canal **ArjanCodes** (buenas prácticas)
-- `GitHub Actions tutorial` -> canal **TechWorld with Nana** (CI/CD desde cero)
+- Canal **ArjanCodes** -> https://www.youtube.com/@ArjanCodes/search?query=fastAPI (buenas prácticas)
+- Canal **TechWorld with Nana** -> https://www.youtube.com/@TechWorldwithNana/search?query=GitHub%20Actions (CI/CD desde cero)
 
 **Tests con pytest:**
 
