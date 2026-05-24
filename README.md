@@ -153,8 +153,49 @@ PostgreSQL
 | Servicio | URL |
 |---|---|
 | API docs (Swagger) | http://localhost:8000/docs |
+| API docs (ReDoc) | http://localhost:8000/redoc |
 | API health | http://localhost:8000/health |
 | API pagos | http://localhost:8000/payments |
+
+**Servidor de producción: Gunicorn + Uvicorn workers**
+
+FastAPI necesita un servidor ASGI para funcionar. Hay varias opciones y la elección
+importa en producción.
+
+Alternativas consideradas:
+
+| Opción | Descripción | Apto para producción |
+|---|---|---|
+| `uvicorn` (1 worker) | Simple, arranque rápido | No (sin redundancia) |
+| `uvicorn --workers N` | Múltiples procesos, sin process manager | Parcialmente |
+| `gunicorn + UvicornWorker` | Gunicorn gestiona workers Uvicorn | Si (opción elegida) |
+
+La opción elegida es **Gunicorn con workers de tipo UvicornWorker**. Gunicorn actúa
+como process manager: si un worker muere lo reinicia automáticamente, gestiona señales
+del sistema operativo (SIGTERM, SIGHUP) y permite graceful shutdown, algo crítico en
+Kubernetes cuando un pod se destruye con peticiones en curso.
+
+La configuración vive en `gunicorn.conf.py` y cubre:
+
+- **workers**: calculado como `(CPU * 2) + 1`, sobreescribible con `WEB_CONCURRENCY`
+- **worker_class**: `uvicorn.workers.UvicornWorker` para soporte async completo
+- **max_requests / jitter**: reinicio periódico de workers para evitar memory leaks
+- **graceful_timeout**: tiempo para terminar peticiones en curso antes de matar el proceso
+- **timeout**: mata workers bloqueados sin respuesta
+- **accesslog / errorlog**: redirigidos a stdout/stderr para que Docker los recoja
+
+En local se fija `WEB_CONCURRENCY=2` en el `docker-compose.yml`. En producción
+se sube ese valor via variable de entorno sin tocar el código ni la imagen.
+
+Para profundizar:
+
+| Recurso | Enlace |
+|---|---|
+| Uvicorn deployment | https://www.uvicorn.org/deployment/ |
+| Gunicorn settings | https://docs.gunicorn.org/en/stable/settings.html |
+| FastAPI server workers | https://fastapi.tiangolo.com/deployment/server-workers/ |
+
+YouTube -> `FastAPI production deployment Gunicorn Docker` -> canal **ArjanCodes**
 
 **Para profundizar antes de continuar:**
 
