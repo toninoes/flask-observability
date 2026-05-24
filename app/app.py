@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import create_engine, Column, String, Numeric, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session
+
 import uuid
 import os
 
@@ -67,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Payment API", version="1.0.0", lifespan=lifespan)
-
+Instrumentator().instrument(app).expose(app)
 
 # ---------------------------------------------------------------------------
 # Endpoints
