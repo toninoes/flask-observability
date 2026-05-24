@@ -18,8 +18,8 @@ de pagos en FastAPI y desplegado en local con Docker.
    - [Fase 4: Trazas distribuidas con Tempo y OpenTelemetry](#-fase-4-trazas-distribuidas-con-tempo-y-opentelemetry)
    - [Fase 5: OTEL Collector, el router central](#-fase-5-otel-collector-el-router-central)
    - [Fase 6: Retención larga con Thanos y MinIO](#-fase-6-retención-larga-con-thanos-y-minio)
-6. [Correlación entre las tres señales](#6-correlación-entre-las-tres-señales)
-7. [Métricas expuestas por la API](#7-métricas-expuestas-por-la-api)
+6. [Correlación entre las tres señales](#6-correlacion-entre-las-tres-senales)
+7. [Métricas expuestas por la API](#7-metricas-expuestas-por-la-api)
 8. [Campos de log](#8-campos-de-log)
 9. [Notas importantes](#9-notas-importantes)
 10. [Dependabot](#10-dependabot)
@@ -27,6 +27,7 @@ de pagos en FastAPI y desplegado en local con Docker.
 
 ---
 
+<a name="1-objetivo"></a>
 ## 🎯 1. Objetivo
 
 Aprender las tecnologías del stack de observabilidad de producción de forma incremental,
@@ -38,6 +39,7 @@ trazas, retención histórica y visualización.
 
 ---
 
+<a name="2-arquitectura-final"></a>
 ## 🏗️ 2. Arquitectura final
 
 ```
@@ -76,6 +78,7 @@ trazas, retención histórica y visualización.
 
 ---
 
+<a name="3-requisitos-del-sistema"></a>
 ## 🖥️ 3. Requisitos del sistema
 
 | Recurso | Mínimo | Recomendado |
@@ -97,6 +100,7 @@ python3 --version
 
 ---
 
+<a name="4-estructura-del-proyecto"></a>
 ## 📁 4. Estructura del proyecto
 
 ```
@@ -149,6 +153,7 @@ fastapi-observability/
 
 ---
 
+<a name="5-itinerario-de-fases"></a>
 ## 🗺️ 5. Itinerario de fases
 
 ---
@@ -521,6 +526,7 @@ FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
 
 ---
 
+<a name="6-correlacion-entre-las-tres-senales"></a>
 ## 🔗 6. Correlación entre las tres señales
 
 El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
@@ -537,6 +543,7 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
+<a name="7-metricas-expuestas-por-la-api"></a>
 ## 📊 7. Métricas expuestas por la API (Fase 2 en adelante)
 
 | Métrica | Tipo | Descripción |
@@ -549,6 +556,7 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
+<a name="8-campos-de-log"></a>
 ## 🏷️ 8. Campos de log (Fase 3 en adelante)
 
 ```json
@@ -570,14 +578,16 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 ---
 
+<a name="9-notas-importantes"></a>
 ## ⚠️ 9. Notas importantes
 
 - **Cada fase es acumulativa**: el `docker-compose.yml` crece en cada fase añadiendo servicios.
-- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 16 GB del equipo.
+- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 8 GB del equipo.
 - **Thanos Compact se omite en local**: solo tiene sentido con semanas de datos históricos reales.
 
 ---
 
+<a name="10-dependabot"></a>
 ## 🤖 10. Dependabot
 
 Dependabot revisa automáticamente las dependencias del proyecto cada semana y abre
@@ -597,6 +607,7 @@ lo que pasa los tests.
 
 ---
 
+<a name="11-referencias"></a>
 ## 📚 11. Referencias
 
 | Herramienta | Documentación |
