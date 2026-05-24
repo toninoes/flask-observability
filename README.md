@@ -592,18 +592,23 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 
 Dependabot revisa automáticamente las dependencias del proyecto cada semana y abre
 Pull Requests cuando hay versiones nuevas disponibles. Está configurado en
-`.github/dependabot.yml` y cubre cuatro ecosistemas:
+`.github/dependabot.yml` y cubre estos ecosistemas:
 
 | Ecosistema | Qué monitoriza |
 |---|---|
 | `pip` | `app/requirements.txt` y `requirements-dev.txt` |
-| `docker` (app) | Imagen base del `app/Dockerfile` |
-| `docker` (raíz) | Imágenes del `docker-compose.yml` |
-| `github-actions` | Actions del workflow de CI |
+| `docker` | Imagen base del `app/Dockerfile` |
+| `docker-compose` | Imágenes del `docker-compose.yml` |
+| `github-actions` | Versiones de las Actions del workflow de CI (ej. `actions/checkout@v6`) |
 
 Cada semana Dependabot abre PRs automáticos con las actualizaciones disponibles.
 El test gate del CI se ejecuta sobre cada PR, de forma que solo se mergea
 lo que pasa los tests.
+
+**Limitación importante:** el ecosistema `github-actions` solo monitoriza las versiones
+de las Actions, no las imágenes Docker referenciadas como servicios dentro de los workflows
+(por ejemplo `postgres:18-alpine` en el job `test`). Esas imágenes hay que revisarlas
+y actualizarlas a mano cuando se actualice la imagen principal de PostgreSQL.
 
 ---
 
