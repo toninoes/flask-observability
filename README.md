@@ -53,7 +53,7 @@ trazas, retención histórica y visualización.
                     │                 │  enriquecimiento · routing
                     └──┬──────┬──────┬┘
                        │      │      │
-           ┌───────────▼─┐  ┌──▼──┐ ┌▼─────┐
+           ┌───────────▼─┐  ┌─▼───┐ ┌▼─────┐
            │ Prometheus  │  │Loki │ │Tempo │
            │  métricas   │  │logs │ │trazas│
            └──────┬──────┘  └──┬──┘ └──┬───┘
@@ -582,7 +582,7 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 ## ⚠️ 9. Notas importantes
 
 - **Cada fase es acumulativa**: el `docker-compose.yml` crece en cada fase añadiendo servicios.
-- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 8 GB del equipo.
+- **Todos los contenedores tienen `mem_limit`**: para no comprometer los 16 GB del equipo.
 - **Thanos Compact se omite en local**: solo tiene sentido con semanas de datos históricos reales.
 
 ---
