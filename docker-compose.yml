@@ -22,7 +22,7 @@ services:
       - POSTGRES_PASSWORD=payments
       - POSTGRES_DB=paymentsdb
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U payments -d paymentsdb"]
       interval: 5s
