@@ -81,15 +81,15 @@ trazas, retención histórica y visualización.
 <a name="3-requisitos-del-sistema"></a>
 ## 🖥️ 3. Requisitos del sistema
 
-| Recurso | Mínimo | Recomendado |
+| Recurso | Mínimo | Probado con |
 |---|---|---|
 | SO | Ubuntu 22.04+ | Ubuntu 24.04 |
 | RAM | 8 GB (Fases 1-4) | 16 GB (stack completo Fase 6) |
-| CPU | 4 cores | 6+ cores |
+| CPU | 4 cores | 4 cores (i7) |
 | Disco | 10 GB libres | 20 GB libres |
 | Docker Engine | 24+ | última estable |
 | Docker Compose | v2 (`docker compose`) | última estable |
-| Python | 3.12+ | 3.13 |
+| Python | 3.12+ | 3.14 |
 
 ```bash
 # Verificar antes de empezar
@@ -239,8 +239,8 @@ Para profundizar:
 
 | Recurso | Enlace |
 |---|---|
-| Uvicorn deployment | https://www.uvicorn.org/deployment/ |
-| Gunicorn settings | https://docs.gunicorn.org/en/stable/settings.html |
+| Uvicorn deployment | https://uvicorn.dev/deployment/ |
+| Gunicorn settings | https://gunicorn.org/reference/settings/ |
 | FastAPI server workers | https://fastapi.tiangolo.com/deployment/server-workers/ |
 
 YouTube:
