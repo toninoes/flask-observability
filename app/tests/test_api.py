@@ -69,3 +69,13 @@ def test_get_payments_after_creation(client):
     response = client.get("/payments")
     assert response.status_code == 200
     assert response.json()["total"] == initial + 1
+
+# Verifica que el endpoint de métricas de Prometheus está disponible
+# y contiene las métricas custom de negocio que hemos definido.
+def test_metrics_endpoint(client):
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "payments_created_total" in response.text
+    assert "payments_amount_euros" in response.text
+    assert "http_requests_total" in response.text
+        
