@@ -114,7 +114,6 @@ services:
       - "3100:3100"
     volumes:
       - ./loki/loki-config.yml:/etc/loki/local-config.yaml
-      - loki_data:/tmp/loki
     command: -config.file=/etc/loki/local-config.yaml
     restart: unless-stopped
     mem_limit: 256m
@@ -136,4 +135,3 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
-  loki_data:
