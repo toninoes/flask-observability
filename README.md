@@ -123,7 +123,8 @@ fastapi-observability/
 ├── grafana/
 │   ├── provisioning/
 │   │   ├── datasources/
-│   │   │   └── prometheus.yml    # Datasource Prometheus (Fase 2)
+│   │   │   ├── prometheus.yml    # Datasource Prometheus (Fase 2)
+│   │   │   └── loki.yml          # Datasource Loki (Fase 3)
 │   │   └── dashboards/
 │   │       └── dashboard.yml     # Config carga de dashboards (Fase 2)
 │   └── dashboards/
@@ -139,6 +140,9 @@ fastapi-observability/
 │
 ├── loki/
 │   └── loki-config.yml           # Config Loki (Fase 3)
+│
+├── promtail/
+│   └── promtail-config.yml       # Config Promtail (Fase 3)
 │
 ├── tempo/
 │   └── tempo-config.yml          # Config Tempo (Fase 4)
@@ -517,29 +521,84 @@ YouTube:
 
 **Concepto:** los logs son la señal más detallada. Un log bien estructurado
 te dice exactamente qué pasó, cuándo, en qué contexto y con qué datos.
+
 El problema habitual es que los logs son texto plano y son imposibles de
-buscar a escala. La solución es emitirlos en JSON (logs estructurados)
-e indexarlos con Loki para poder buscar con LogQL.
+buscar a escala:
+
+```
+# Log plano (inútil para buscar por campo)
+2026-05-25 19:30:01 INFO Payment created amount=99.99 currency=EUR
+
+# Log estructurado JSON (filtrable por cualquier campo)
+{"event": "payment_created", "level": "info", "timestamp": "2026-05-25T19:30:01Z",
+ "payment_id": "dc56ff88", "amount": 99.99, "currency": "EUR"}
+```
+
+Promtail recoge los logs de todos los contenedores Docker automáticamente
+y los envía a Loki. Grafana los visualiza y permite consultarlos con LogQL.
 
 **Vídeo previo recomendado:**
-YouTube -> `Grafana Loki Docker Compose tutorial` -> canal **Grafana** oficial
+YouTube -> canal **Grafana** oficial -> https://www.youtube.com/@Grafana/search?query=loki+docker
 
 **Qué se hace:**
-- Añadir `structlog` a la app para logging estructurado en JSON
-- Cada log incluye: `payment_id`, `endpoint`, `status_code`, `duration_ms`
-- Levantar Loki como backend de logs
-- Levantar Promtail para recoger logs de contenedores Docker
-- Explorar LogQL en Grafana: filtrar por endpoint, ver errores agrupados
+- Añadir `structlog` a `app.py` para emitir logs JSON estructurados
+- Crear `loki/loki-config.yml` con la configuración de Loki
+- Crear `promtail/promtail-config.yml` para recoger logs de todos los contenedores Docker via socket
+- Añadir datasource Loki en Grafana via provisioning
+- Explorar LogQL en Grafana: filtrar por campo, nivel, servicio
+
+**Scope de logs recogidos:**
+- Logs JSON estructurados de FastAPI (evento `payment_created` con `payment_id`, `amount`, `currency`)
+- Logs de todos los contenedores Docker (PostgreSQL, Prometheus, Grafana, cAdvisor...) via Promtail
+
+**Ficheros nuevos:**
+```
+loki/
+└── loki-config.yml
+promtail/
+└── promtail-config.yml
+grafana/provisioning/datasources/
+└── loki.yml
+```
+
+**Queries LogQL de ejemplo:**
+
+```logql
+# Todos los logs de la API
+{service="api"}
+
+# Solo logs del evento payment_created
+{service="api"} |= "payment_created"
+
+# Filtrar por campo JSON: pagos con importe mayor de 500€
+{service="api"} | json | amount > 500
+
+# Solo logs de nivel error
+{service="api"} | json | level="error"
+
+# Logs de PostgreSQL
+{service="db"}
+
+# Todos los contenedores menos Prometheus
+{container=~".+"} != "prometheus"
+```
+
+**Bug encontrado durante la implementación:**
+- Loki 3.x corre como usuario no-root (uid 10001) y no tiene permisos para escribir
+  en volúmenes Docker creados como root -> fix: eliminar el volumen externo y dejar
+  que Loki use `/tmp/loki` internamente dentro del contenedor
+
+**Nota sobre Promtail:**
+Promtail está en modo mantenimiento. Grafana lo está reemplazando por **Grafana Alloy**,
+su nuevo agente unificado. Para este proyecto Promtail sigue siendo válido y en Fase 5
+lo reemplazaremos por el OTEL Collector.
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI (JSON logs)
-      ↓
-  Promtail (recoge logs Docker)
-      ↓
-    Loki
-      ↕
-   Grafana
+FastAPI (JSON logs)         ---> Promtail ---> Loki
+Todos los contenedores      ---> Promtail ---> Loki
+                                                ↕
+                                            Grafana (Explore -> Loki)
 ```
 
 **URLs añadidas:**
@@ -547,6 +606,21 @@ FastAPI (JSON logs)
 |---|---|
 | Loki (health) | http://localhost:3100/ready |
 | Grafana (Loki) | http://localhost:3000 -> Explore -> Loki |
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Grafana Loki docs | https://grafana.com/docs/loki/latest/ |
+| LogQL reference | https://grafana.com/docs/loki/latest/query/ |
+| Promtail docs | https://grafana.com/docs/loki/latest/send-data/promtail/ |
+| structlog docs | https://www.structlog.org/en/stable/ |
+| Grafana Alloy (sucesor de Promtail) | https://grafana.com/docs/alloy/latest/ |
+
+YouTube:
+- Canal **Grafana** (Loki) -> https://www.youtube.com/@Grafana/search?query=loki
+- Canal **TechWorld with Nana** (Loki) -> https://www.youtube.com/@TechWorldwithNana/search?query=loki
+- Canal **That DevOps Guy** (Loki) -> https://www.youtube.com/@MarcelDempers/search?query=loki
 
 ---
 
