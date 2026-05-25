@@ -122,10 +122,17 @@ fastapi-observability/
 │
 ├── grafana/
 │   ├── provisioning/
-│   │   ├── datasources/          # Datasources auto-provisionados (Fase 2)
-│   │   └── dashboards/           # Config carga de dashboards (Fase 2)
+│   │   ├── datasources/
+│   │   │   └── prometheus.yml    # Datasource Prometheus (Fase 2)
+│   │   └── dashboards/
+│   │       └── dashboard.yml     # Config carga de dashboards (Fase 2)
 │   └── dashboards/
-│       └── payments.json         # Dashboard de pagos (Fase 2)
+│       ├── payment-api/
+│       │   └── payments.json     # Dashboard de pagos (Fase 2)
+│       └── infrastructure/
+│           ├── node-exporter.json  # Dashboard Node Exporter (Fase 2)
+│           ├── postgresql.json     # Dashboard PostgreSQL (Fase 2)
+│           └── cadvisor.json       # Dashboard cAdvisor (Fase 2)
 │
 ├── otel-collector/
 │   └── otel-collector-config.yml # Pipeline unificado (Fase 5)
@@ -382,10 +389,51 @@ YouTube -> canal **TechWorld with Nana** -> https://www.youtube.com/@TechWorldwi
 - Añadir métricas custom de negocio con `prometheus-client`:
   - `payments_created_total` (Counter) con etiqueta `currency`
   - `payments_amount_euros` (Histogram) con buckets por importe y etiqueta `currency`
-- Crear `prometheus/prometheus.yml` con la configuración de scraping cada 15s apuntando a `api:8000`
-- Crear provisioning de Grafana: datasource Prometheus y dashboard con 5 paneles pre-configurados
+- Crear `prometheus/prometheus.yml` con la configuración de scraping cada 15s
+- Crear provisioning de Grafana: datasource Prometheus y dashboards pre-configurados
 - Añadir Prometheus y Grafana al `docker-compose.yml`
-- Verificar el target en Prometheus targets y ver métricas en Grafana
+- Añadir exporters de infraestructura para monitorizar el servidor y los contenedores
+- Verificar todos los targets en Prometheus y explorar dashboards en Grafana
+
+**Exporters de infraestructura:**
+
+En producción no basta con monitorizar la aplicación. Los exporters son agentes
+que exponen métricas de sistemas que no hablan Prometheus de forma nativa.
+
+| Exporter | Imagen | Puerto | Qué monitoriza |
+|---|---|---|---|
+| Node Exporter | `prom/node-exporter` | 9100 | CPU, RAM, disco, red del servidor Linux |
+| postgres_exporter | `prometheuscommunity/postgres-exporter` | 9187 | Conexiones, queries, estado de PostgreSQL |
+| cAdvisor | `gcr.io/cadvisor/cadvisor` | 8080 | RAM y CPU por contenedor Docker |
+
+Los tres se añaden como servicios en `docker-compose.yml` y como jobs en `prometheus.yml`.
+
+**Dashboards de Grafana provisionados:**
+
+Los dashboards de la comunidad se descargan y se incluyen en el repo como código.
+Al arrancar Grafana los carga automáticamente sin intervención manual.
+
+```bash
+mkdir -p grafana/dashboards/payment-api
+mkdir -p grafana/dashboards/infrastructure
+
+# Dashboard de la app (creado a mano)
+# grafana/dashboards/payment-api/payments.json
+
+# Dashboards de la comunidad
+curl -s https://grafana.com/api/dashboards/1860/revisions/latest/download \
+  -o grafana/dashboards/infrastructure/node-exporter.json
+curl -s https://grafana.com/api/dashboards/9628/revisions/latest/download \
+  -o grafana/dashboards/infrastructure/postgresql.json
+curl -s https://grafana.com/api/dashboards/193/revisions/latest/download \
+  -o grafana/dashboards/infrastructure/cadvisor.json
+
+# Los dashboards de comunidad usan una variable de datasource que Grafana
+# no resuelve al cargar desde fichero. Hay que reemplazarla con el nombre real:
+sed -i 's/\${DS_PROMETHEUS}/Prometheus/g' grafana/dashboards/infrastructure/node-exporter.json
+sed -i 's/\${DS_PROMETHEUS}/Prometheus/g' grafana/dashboards/infrastructure/postgresql.json
+sed -i 's/\${DS_PROMETHEUS}/Prometheus/g' grafana/dashboards/infrastructure/cadvisor.json
+```
 
 **Ficheros nuevos:**
 ```
@@ -398,12 +446,19 @@ grafana/
 │   └── dashboards/
 │       └── dashboard.yml
 └── dashboards/
-    └── payments.json
+    ├── payment-api/
+    │   └── payments.json
+    └── infrastructure/
+        ├── node-exporter.json
+        ├── postgresql.json
+        └── cadvisor.json
 ```
 
 **Bugs encontrados y corregidos durante la implementación:**
 - `payments_amount_euros.observe()` recibía un `Decimal` de SQLAlchemy en vez de `float` -> fix: `float(new_payment.amount)`
 - El CI marcaba verde aunque pytest fallaba porque `| tee` ocultaba el exit code de pytest -> fix: `set -o pipefail`
+- El CI no arrancaba en PRs de Dependabot porque el trigger solo cubría `push` a `main` -> fix: añadir trigger `pull_request`
+- Los dashboards de comunidad mostraban "No data" al provisionar desde fichero -> fix: `sed` para reemplazar `${DS_PROMETHEUS}`
 
 **Generar tráfico para ver los paneles:**
 ```bash
@@ -418,14 +473,21 @@ done
 **Al terminar esta fase tendrás:**
 ```
 FastAPI (/metrics) <-- scraping cada 15s -- Prometheus
+Node Exporter      <-- scraping cada 15s -- Prometheus
+postgres_exporter  <-- scraping cada 15s -- Prometheus
+cAdvisor           <-- scraping cada 15s -- Prometheus
                                                   ↕
                                               Grafana
+                               (Payment API · Infrastructure)
 ```
 
 **URLs añadidas:**
 | Servicio | URL |
 |---|---|
 | Métricas raw | http://localhost:8000/metrics |
+| Node Exporter | http://localhost:9100/metrics |
+| postgres_exporter | http://localhost:9187/metrics |
+| cAdvisor | http://localhost:8080/metrics |
 | Prometheus targets | http://localhost:9090/targets |
 | Prometheus query | http://localhost:9090 |
 | Grafana | http://localhost:3000 (admin/admin) |
@@ -436,12 +498,18 @@ FastAPI (/metrics) <-- scraping cada 15s -- Prometheus
 |---|---|
 | Prometheus docs | https://prometheus.io/docs/introduction/overview/ |
 | PromQL basics | https://prometheus.io/docs/prometheus/latest/querying/basics/ |
+| Prometheus exporters | https://prometheus.io/docs/instrumenting/exporters/ |
+| Node Exporter | https://github.com/prometheus/node_exporter |
+| postgres_exporter | https://github.com/prometheus-community/postgres_exporter |
+| cAdvisor | https://github.com/google/cadvisor |
 | Grafana dashboards | https://grafana.com/docs/grafana/latest/dashboards/ |
+| Grafana provisioning | https://grafana.com/docs/grafana/latest/administration/provisioning/ |
 | prometheus-fastapi-instrumentator | https://github.com/trallnag/prometheus-fastapi-instrumentator |
 
 YouTube:
 - Canal **TechWorld with Nana** (Prometheus) -> https://www.youtube.com/@TechWorldwithNana/search?query=Prometheus+Grafana
-- Canal **That DevOps Guy** (Prometheus) -> https://www.youtube.com/@MarcelDempers/search?query=prometheus
+- Canal **TechWorld with Nana** (Node Exporter) -> https://www.youtube.com/@TechWorldwithNana/search?query=node+exporter
+- Canal **That DevOps Guy** (Prometheus exporters) -> https://www.youtube.com/@MarcelDempers/search?query=prometheus+exporter
 
 ---
 
