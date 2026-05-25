@@ -10,6 +10,29 @@ from sqlalchemy.orm import DeclarativeBase, Session
 
 import uuid
 import os
+import structlog
+import logging
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    format="%(message)s",
+    level=logging.INFO,
+)
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+
+logger = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
@@ -118,5 +141,11 @@ def create_payment(payment: PaymentRequest):
         session.refresh(new_payment)
         payments_created_total.labels(currency=payment.currency).inc()
         payments_amount_euros.labels(currency=payment.currency).observe(float(new_payment.amount))
+        logger.info(
+            "payment_created",
+            payment_id=new_payment.id,
+            amount=float(new_payment.amount),
+            currency=new_payment.currency,
+        )
         return PaymentResponse.model_validate(new_payment)
  
