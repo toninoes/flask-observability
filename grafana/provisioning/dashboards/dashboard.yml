@@ -5,5 +5,10 @@ providers:
     folder: Payment API
     type: file
     options:
-      path: /var/lib/grafana/dashboards
+      path: /var/lib/grafana/dashboards/payment-api
 
+  - name: infrastructure
+    folder: Infrastructure
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards/infrastructure
