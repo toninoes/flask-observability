@@ -13,6 +13,9 @@ datasources:
         spanEndTimeShift: "1h"
         filterByTraceID: true
         filterBySpanID: false
+        tags:
+          - key: service.name
+            value: container
       lokiSearch:
         datasourceUid: P8E80F9AEF21F6940
 

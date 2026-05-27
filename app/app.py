@@ -13,6 +13,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 
 import uuid
 import os
@@ -54,11 +55,12 @@ logger = structlog.get_logger()
 # Tracing
 # ---------------------------------------------------------------------------
 def setup_tracing():
+    resource = Resource.create({SERVICE_NAME: "payment-api"})
     exporter = OTLPSpanExporter(
         endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317"),
         insecure=True,
     )
-    provider = TracerProvider()
+    provider = TracerProvider(resource=resource)
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     return trace.get_tracer(__name__)
