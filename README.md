@@ -677,7 +677,7 @@ En arquitecturas con varios microservicios el valor se multiplica: una sola
 traza con el mismo `trace_id` recorre todos los servicios.
 
 **Vídeo previo recomendado:**
-YouTube -> canal **opentelemetry** oficial -> https://www.youtube.com/@otelcommunity/search?query=python+fastapi
+YouTube -> canal **opentelemetry** oficial -> https://www.youtube.com/@otel-official/search?query=python+fastapi
 
 **Qué se hace:**
 - Añadir dependencias OpenTelemetry al `requirements.txt`
@@ -755,7 +755,7 @@ FastAPI --OTLP HTTP--> Tempo
 | TraceQL reference | https://grafana.com/docs/tempo/latest/traceql/ |
 
 YouTube:
-- Canal **opentelemetry** oficial -> https://www.youtube.com/@otelcommunity/search?query=python
+- Canal **opentelemetry** oficial -> https://www.youtube.com/@otel-official/search?query=python
 - Canal **Grafana** (Tempo) -> https://www.youtube.com/@Grafana/search?query=tempo
 - Canal **That DevOps Guy** (OpenTelemetry) -> https://www.youtube.com/@MarcelDempers/search?query=opentelemetry
 
