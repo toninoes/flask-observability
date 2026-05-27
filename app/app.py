@@ -7,6 +7,12 @@ from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import create_engine, Column, String, Numeric, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
 import uuid
 import os
@@ -21,11 +27,20 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+def add_trace_context(logger, method, event_dict):
+    span = trace.get_current_span()
+    if span and span.is_recording():
+        ctx = span.get_span_context()
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        add_trace_context,
         structlog.processors.JSONRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
@@ -33,6 +48,22 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# Tracing
+# ---------------------------------------------------------------------------
+def setup_tracing():
+    exporter = OTLPSpanExporter(
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317"),
+        insecure=True,
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    return trace.get_tracer(__name__)
+
+tracer = setup_tracing()
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +141,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Payment API", version="1.0.0", lifespan=lifespan)
 Instrumentator().instrument(app).expose(app)
+FastAPIInstrumentor.instrument_app(app)
+SQLAlchemyInstrumentor().instrument(engine=engine)
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -131,21 +164,25 @@ def get_payments():
 
 @app.post("/payments", response_model=PaymentResponse, status_code=201)
 def create_payment(payment: PaymentRequest):
-    with Session(engine) as session:
-        new_payment = Payment(
-            amount=payment.amount,
-            currency=payment.currency,
-        )
-        session.add(new_payment)
-        session.commit()
-        session.refresh(new_payment)
-        payments_created_total.labels(currency=payment.currency).inc()
-        payments_amount_euros.labels(currency=payment.currency).observe(float(new_payment.amount))
-        logger.info(
-            "payment_created",
-            payment_id=new_payment.id,
-            amount=float(new_payment.amount),
-            currency=new_payment.currency,
-        )
-        return PaymentResponse.model_validate(new_payment)
+    with tracer.start_as_current_span("payment.process") as span:
+        span.set_attribute("payment.amount", payment.amount)
+        span.set_attribute("payment.currency", payment.currency)
+        with Session(engine) as session:
+            new_payment = Payment(
+                amount=payment.amount,
+                currency=payment.currency,
+            )
+            session.add(new_payment)
+            session.commit()
+            session.refresh(new_payment)
+            payments_created_total.labels(currency=payment.currency).inc()
+            payments_amount_euros.labels(currency=payment.currency).observe(float(new_payment.amount))
+            logger.info(
+                "payment_created",
+                payment_id=new_payment.id,
+                amount=float(new_payment.amount),
+                currency=new_payment.currency,
+            )
+            span.set_attribute("payment.id", new_payment.id)
+            return PaymentResponse.model_validate(new_payment)
  
