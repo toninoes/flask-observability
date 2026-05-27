@@ -124,7 +124,8 @@ fastapi-observability/
 │   ├── provisioning/
 │   │   ├── datasources/
 │   │   │   ├── prometheus.yml    # Datasource Prometheus (Fase 2)
-│   │   │   └── loki.yml          # Datasource Loki (Fase 3)
+│   │   │   ├── loki.yml          # Datasource Loki (Fase 3)
+│   │   │   └── tempo.yml         # Datasource Tempo + correlación (Fase 4)
 │   │   └── dashboards/
 │   │       └── dashboard.yml     # Config carga de dashboards (Fase 2)
 │   └── dashboards/
@@ -626,31 +627,114 @@ YouTube:
 
 ### 🟣 Fase 4: Trazas distribuidas con Tempo y OpenTelemetry
 
-**Concepto:** una traza muestra el recorrido completo de una petición
-desde que entra hasta que sale. En un sistema con microservicios es
-la única forma de saber en qué paso exacto se perdió tiempo o falló algo.
-Cada traza está formada por spans, uno por operación (validar, consultar BD, responder).
+**Concepto:** una traza muestra el recorrido completo de una petición desde que entra
+hasta que sale. Está formada por spans, uno por cada operación del camino:
 
-OpenTelemetry es el estándar CNCF que instrumenta la app para generar esas trazas.
-Tempo las almacena. Grafana las visualiza.
+```
+Traza: POST /payments (29.73ms total)
+  ├── span: POST /payments http receive    (66µs)
+  ├── span: payment.process               (26ms)   <- span custom
+  │     ├── span: connect                 (722µs)  <- SQLAlchemy auto
+  │     ├── span: INSERT paymentsdb       (2.43ms) <- SQLAlchemy auto
+  │     ├── span: connect                 (1.51ms) <- SQLAlchemy auto
+  │     └── span: SELECT paymentsdb       (3.43ms) <- SQLAlchemy auto
+  └── span: POST /payments http send      (45µs)
+```
+
+Las métricas te dicen qué está lento. Las trazas te dicen dónde exactamente.
+
+**¿Qué es Tempo?**
+
+Tempo es el backend de almacenamiento de trazas de Grafana Labs. A diferencia de
+Jaeger o Zipkin, Tempo no indexa por defecto — guarda las trazas en object storage
+sin índices pesados, lo que lo hace muy barato de operar a escala. Se integra
+nativamente con Grafana y acepta el protocolo OTLP estándar.
+
+```
+FastAPI --OTLP HTTP (4318)--> Tempo (almacena)
+Grafana --HTTP (3200)-------> Tempo (consulta)
+```
+
+**¿Por qué el OTEL Collector va en la Fase 5 y no ahora?**
+
+En esta fase el flujo es directo: `FastAPI -> Tempo`. En la Fase 5 el Collector
+se pone en medio: `FastAPI -> OTEL Collector -> Tempo/Prometheus/Loki`.
+
+El Collector aporta valor cuando tienes múltiples señales y múltiples destinos:
+la app solo habla con un sitio, el Collector decide adónde va cada señal, y si
+cambias de backend (de Tempo a Jaeger por ejemplo) solo cambias la config del
+Collector sin tocar la app.
+
+**¿Las trazas son solo de la app?**
+
+Las trazas son para aplicaciones, no para infraestructura. Node Exporter o
+cAdvisor emiten métricas, no trazas. PostgreSQL no se traza directamente, pero
+con `opentelemetry-instrumentation-sqlalchemy` cada query SQL se convierte en
+un span dentro de la traza de la petición, mostrando exactamente cuánto tiempo
+tarda cada operación de BD.
+
+En arquitecturas con varios microservicios el valor se multiplica: una sola
+traza con el mismo `trace_id` recorre todos los servicios.
 
 **Vídeo previo recomendado:**
-YouTube -> `OpenTelemetry Python FastAPI tutorial` -> canal **opentelemetry** oficial
+YouTube -> canal **opentelemetry** oficial -> https://www.youtube.com/@otelcommunity/search?query=python+fastapi
 
 **Qué se hace:**
-- Añadir SDK de OpenTelemetry a la app con auto-instrumentación de FastAPI
-- Spans custom: `payment.validate`, `payment.process`, `payment.persist`
-- Levantar Tempo como backend de trazas
-- Ver una traza completa en Grafana y navegar entre sus spans
-- Correlacionar una traza con sus logs usando `trace_id`
+- Añadir dependencias OpenTelemetry al `requirements.txt`
+- Configurar `TracerProvider` con `OTLPSpanExporter` apuntando a Tempo (HTTP puerto 4318)
+- Inyectar `trace_id` y `span_id` en cada log de structlog via `add_trace_context`
+- Auto-instrumentación de FastAPI con `FastAPIInstrumentor`
+- Auto-instrumentación de SQLAlchemy con `SQLAlchemyInstrumentor`
+- Span custom `payment.process` con atributos de negocio (`payment.amount`, `payment.currency`)
+- Definir el service name directamente en el código via `Resource.create({SERVICE_NAME: "payment-api"})`
+- Crear `tempo/tempo-config.yml` con receptor OTLP HTTP y gRPC
+- Añadir datasource Tempo en Grafana con correlación configurada hacia Loki
+- Verificar correlación traza -> logs en Grafana
+
+**Dependencias añadidas:**
+```
+opentelemetry-api==1.41.1
+opentelemetry-sdk==1.41.1
+opentelemetry-instrumentation-fastapi==0.62b1
+opentelemetry-instrumentation-sqlalchemy==0.62b1
+opentelemetry-exporter-otlp-proto-http==1.41.1
+```
+
+**Ficheros nuevos:**
+```
+tempo/
+└── tempo-config.yml
+grafana/provisioning/datasources/
+└── tempo.yml
+```
+
+**Correlación traza -> logs:**
+
+El campo `trace_id` es el hilo conductor. Cada log JSON de structlog incluye
+el `trace_id` del span activo en ese momento. Al abrir una traza en Grafana
+y pulsar el icono de logs junto a un span, Grafana ejecuta automáticamente
+esta query en Loki:
+
+```logql
+{container="payment-api"} | trace_id="0427e8800e08decfeb5dde07610ea6fc"
+```
+
+Y muestra el log exacto de ese pago con todos sus campos.
+
+**Bugs encontrados durante la implementación:**
+- Usar `OTEL_SERVICE_NAME` como variable de entorno conflictuaba con la
+  auto-configuración del SDK -> fix: definir el service name directamente en
+  el código con `Resource.create({SERVICE_NAME: "payment-api"})` y eliminar
+  la env var
+- La correlación Tempo -> Loki usaba el label `service_name` que no existe en
+  Loki -> fix: mapear `service.name` al label `container` en el datasource de
+  Tempo, que sí existe en Promtail
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI (spans OTEL)
-      ↓
-    Tempo
-      ↕
-   Grafana (ver traza + correlacionar con logs de Loki)
+FastAPI --OTLP HTTP--> Tempo
+                          ↕
+                       Grafana (ver traza + saltar a logs de Loki)
 ```
 
 **URLs añadidas:**
@@ -658,6 +742,22 @@ FastAPI (spans OTEL)
 |---|---|
 | Tempo (health) | http://localhost:3200/ready |
 | Grafana (Tempo) | http://localhost:3000 -> Explore -> Tempo |
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Grafana Tempo docs | https://grafana.com/docs/tempo/latest/ |
+| OpenTelemetry Python | https://opentelemetry.io/docs/languages/python/ |
+| OTel SDK Python | https://opentelemetry-python.readthedocs.io/ |
+| OTel FastAPI instrumentation | https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/fastapi/fastapi.html |
+| OTel SQLAlchemy instrumentation | https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/sqlalchemy/sqlalchemy.html |
+| TraceQL reference | https://grafana.com/docs/tempo/latest/traceql/ |
+
+YouTube:
+- Canal **opentelemetry** oficial -> https://www.youtube.com/@otelcommunity/search?query=python
+- Canal **Grafana** (Tempo) -> https://www.youtube.com/@Grafana/search?query=tempo
+- Canal **That DevOps Guy** (OpenTelemetry) -> https://www.youtube.com/@MarcelDempers/search?query=opentelemetry
 
 ---
 
