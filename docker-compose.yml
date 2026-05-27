@@ -131,7 +131,7 @@ services:
     mem_limit: 128m
     
   tempo:
-    image: grafana/tempo:2.8.0
+    image: grafana/tempo:2.10.5
     container_name: tempo
     ports:
       - "3200:3200"
