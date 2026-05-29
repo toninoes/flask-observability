@@ -176,9 +176,11 @@ def health():
 def get_payments():
     with Session(engine) as session:
         payments = session.query(Payment).all()
+        total = len(payments)
+        logger.info("payments_listed", total=total)
         return {
             "payments": [PaymentResponse.model_validate(p) for p in payments],
-            "total": len(payments),
+            "total": total,
         }
 
 
