@@ -14,6 +14,10 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+from opentelemetry._logs import set_logger_provider
 
 import uuid
 import os
@@ -39,13 +43,13 @@ def add_trace_context(logger, method, event_dict):
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
+        structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         add_trace_context,
         structlog.processors.JSONRenderer(),
     ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
     wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-    logger_factory=structlog.PrintLoggerFactory(),
 )
 
 logger = structlog.get_logger()
@@ -56,13 +60,27 @@ logger = structlog.get_logger()
 # ---------------------------------------------------------------------------
 def setup_tracing():
     resource = Resource.create({SERVICE_NAME: "payment-api"})
-    exporter = OTLPSpanExporter(
-        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317"),
+
+    # Trazas
+    trace_exporter = OTLPSpanExporter(
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
         insecure=True,
     )
     provider = TracerProvider(resource=resource)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    provider.add_span_processor(BatchSpanProcessor(trace_exporter))
     trace.set_tracer_provider(provider)
+
+    # Logs
+    log_exporter = OTLPLogExporter(
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
+        insecure=True,
+    )
+    log_provider = LoggerProvider(resource=resource)
+    log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+    set_logger_provider(log_provider)
+    handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+    logging.getLogger().addHandler(handler)
+
     return trace.get_tracer(__name__)
 
 tracer = setup_tracing()

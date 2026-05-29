@@ -15,7 +15,6 @@ datasources:
         filterBySpanID: false
         tags:
           - key: service.name
-            value: container
+            value: service_name
       lokiSearch:
         datasourceUid: P8E80F9AEF21F6940
-
