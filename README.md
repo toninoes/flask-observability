@@ -18,7 +18,6 @@ de pagos en FastAPI y desplegado en local con Docker.
    - [Fase 4: Trazas distribuidas con Tempo y OpenTelemetry](#-fase-4-trazas-distribuidas-con-tempo-y-opentelemetry)
    - [Fase 5: OTEL Collector, el router central](#-fase-5-otel-collector-el-router-central)
    - [Fase 6: Retención larga con Thanos y MinIO](#-fase-6-retención-larga-con-thanos-y-minio)
-   - [Fase 7: Métricas OTLP puro, todo por el Collector](#-fase-7-métricas-otlp-puro-todo-por-el-collector)
 6. [Correlación entre las tres señales](#6-correlacion-entre-las-tres-senales)
 7. [Métricas expuestas por la API](#7-metricas-expuestas-por-la-api)
 8. [Campos de log](#8-campos-de-log)
@@ -765,9 +764,9 @@ YouTube:
 
 ### 🟠 Fase 5: OTEL Collector, el router central
 
-**Concepto:** en producción no se envían trazas y logs directamente a sus
-backends. Todo pasa por un Collector centralizado que recibe, normaliza,
-enriquece y enruta cada señal. La app solo habla con un único destino.
+**Concepto:** en producción no se envían trazas, logs y métricas directamente
+a sus backends. Todo pasa por un Collector centralizado que recibe, normaliza,
+enriquece y enruta cada señal. La app tiene un único punto de salida.
 
 **¿Qué es el OTEL Collector?**
 
@@ -778,146 +777,180 @@ backends de observabilidad. Su arquitectura se basa en tres etapas por señal:
 receivers -> processors -> exporters
 ```
 
-Un pipeline real:
+Pipeline completo de esta fase:
 ```yaml
 receivers:
-  otlp:                      # recibe trazas y logs de la app por gRPC
-    protocols:
-      grpc:
+  otlp:          # recibe trazas, logs y métricas de la app por gRPC
+  prometheus:    # scraping de Node Exporter, postgres_exporter, cAdvisor
 
 processors:
-  memory_limiter:            # evita consumo ilimitado de RAM
-  batch:                     # agrupa señales antes de enviar (eficiencia)
-  resource:                  # añade atributos a todas las señales
+  memory_limiter:  # evita consumo ilimitado de RAM
+  batch:           # agrupa señales antes de enviar (eficiencia)
+  resource:        # añade atributos a todas las señales (environment, etc.)
 
 exporters:
-  otlp_grpc/tempo:           # reenvía trazas a Tempo
-  otlp_http/loki:            # reenvía logs a Loki
+  otlp_grpc/tempo:         # trazas a Tempo
+  otlp_http/loki:          # logs a Loki
+  prometheusremotewrite:   # métricas a Prometheus via remote write
 ```
 
 **¿Por qué merece la pena?**
 
 Si mañana cambias Tempo por Jaeger, solo tocas el Collector. La app no cambia.
 Puedes enriquecer señales, filtrar ruido (health checks), y tener un único
-punto de salida de la app en vez de múltiples conexiones a múltiples backends.
-
-**Arquitectura de métricas (Opción A vs B):**
-
-Las métricas se quedan fuera del Collector porque Prometheus usa el modelo
-pull (va a buscarlas scrapeando `/metrics`). El Collector encaja mejor en el
-modelo push. Para métricas, Prometheus sigue scrapeando directamente la app.
+punto de salida en vez de múltiples conexiones a múltiples backends.
 
 **Qué se hace:**
 - Eliminar Promtail del stack
-- Añadir OTel Collector con pipelines de trazas y logs
-- Configurar la app para enviar logs via OTLP (no via Docker stdout)
+- Eliminar `prometheus-fastapi-instrumentator` y `prometheus-client` de la app
+- Añadir OTel Collector con pipelines de trazas, logs y métricas
+- Configurar la app para enviar las tres señales via OTLP gRPC
 - Bridgear structlog con Python stdlib logging y OTel LoggingHandler
-- App habla con Collector para trazas Y logs via un único endpoint gRPC
+- Migrar métricas de `prometheus_client` a OTel metrics SDK
+- Activar `--web.enable-remote-write-receiver` en Prometheus
+- Collector scraping los exporters de infraestructura (Node Exporter, postgres_exporter, cAdvisor)
+- Prometheus deja de scrapear la app directamente
 
 **Flujo final:**
 ```
-FastAPI --OTLP gRPC--> OTEL Collector --otlp_grpc--> Tempo
-                                      --otlp_http--> Loki
-Prometheus --scraping--> FastAPI /metrics (sin cambio)
+FastAPI --OTLP gRPC (trazas + logs + métricas)--> OTEL Collector
+                                                        |
+                       +----------------+---------------+-----------+
+                       |                |                           |
+               otlp_grpc/tempo   otlp_http/loki     prometheusremotewrite
+                       |                |                           |
+                    Tempo             Loki                    Prometheus
+                                                                    |
+                                                 (también recibe métricas de
+                                                  Node Exporter, postgres_exporter
+                                                  y cAdvisor via prometheus receiver)
 ```
 
-**Ficheros nuevos/modificados:**
+**Ficheros modificados:**
 ```
 otel-collector/
-└── otel-collector-config.yml   # pipelines traces + logs
-app/app.py                      # LoggerProvider + LoggingHandler
-docker-compose.yml              # añade otel-collector, elimina promtail
+└── otel-collector-config.yml   # pipelines trazas + logs + métricas
+app/
+├── app.py                      # OTel trazas + logs + métricas, elimina prometheus_client
+└── requirements.txt            # elimina prometheus-fastapi-instrumentator y prometheus-client
+app/tests/
+├── test_api.py                 # elimina test_metrics_endpoint (/metrics ya no existe)
+└── requirements-dev.txt        # httpx -> httpx2
+prometheus/
+└── prometheus.yml              # solo self-monitoring + otel-collector, Collector asume el resto
+docker-compose.yml              # añade otel-collector, elimina promtail,
+                                # activa --web.enable-remote-write-receiver en Prometheus
+.github/workflows/ci.yml        # añade OTEL_SDK_DISABLED=true en job de tests
 ```
 
 **Cambios en `app.py`:**
 
-El logging bridge es el cambio más importante. Antes structlog escribía
-directamente a stdout via `PrintLoggerFactory`. Ahora usa `stdlib.LoggerFactory()`
-para que los logs pasen por Python's `logging` module, donde el OTel
-`LoggingHandler` los captura y los envía via OTLP al Collector:
+La función `setup_tracing()` ahora configura las tres señales con el mismo
+`resource` y el mismo endpoint OTLP. Todas apuntan a `otel-collector:4317`:
 
 ```python
-# Logs
-log_exporter = OTLPLogExporter(
-    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
-    insecure=True,
-)
-log_provider = LoggerProvider(resource=resource)
-log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
-set_logger_provider(log_provider)
-handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
-logging.getLogger().addHandler(handler)
+def setup_tracing():
+    if os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
+        return trace.get_tracer(__name__), MeterProvider().get_meter(__name__)
+
+    resource = Resource.create({SERVICE_NAME: "payment-api"})
+
+    # Trazas
+    trace_exporter = OTLPSpanExporter(endpoint=..., insecure=True)
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(trace_exporter))
+    trace.set_tracer_provider(provider)
+
+    # Logs
+    log_exporter = OTLPLogExporter(endpoint=..., insecure=True)
+    log_provider = LoggerProvider(resource=resource)
+    log_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+    set_logger_provider(log_provider)
+    handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+    logging.getLogger().addHandler(handler)
+
+    # Metricas
+    metric_exporter = OTLPMetricExporter(endpoint=..., insecure=True)
+    reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=15000)
+    meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
+    set_meter_provider(meter_provider)
+    meter = meter_provider.get_meter(__name__)
+
+    return trace.get_tracer(__name__), meter
+
+tracer, meter = setup_tracing()
 ```
 
+Las métricas de negocio migran de `prometheus_client` a OTel:
+
 ```python
-structlog.configure(
-    processors=[...],
-    logger_factory=structlog.stdlib.LoggerFactory(),  # clave: ya no PrintLoggerFactory
-    ...
-)
+# Antes (prometheus_client)
+payments_created_total = Counter("payments_created_total", ..., ["currency"])
+payments_created_total.labels(currency=payment.currency).inc()
+
+# Ahora (OTel)
+payments_created_total = meter.create_counter("payments_created_total", ...)
+payments_created_total.add(1, {"currency": payment.currency})
 ```
 
 **Loki recibe logs OTLP con labels distintos a Promtail:**
 
 Con Promtail los logs llegaban con `container="payment-api"`.
-Con OTLP los logs llegan con `service_name="payment-api"` (derivado del
-resource attribute `service.name`). Las queries en Loki cambian:
+Con OTLP los logs llegan con `service_name="payment-api"`. Las queries cambian:
 
 ```logql
-# Antes (Promtail)
-{container="payment-api"} |= "payment_created"
-
-# Ahora (OTLP)
 {service_name="payment-api"} |= "payment_created"
+{service_name="payment-api"} | json | amount > 500
 ```
 
-Los logs contienen los campos JSON completos incluyendo `trace_id` y `span_id`
-como campos indexados en Loki, lo que hace la correlación más robusta.
+**Labels en Prometheus con OTel metrics:**
+
+Las métricas OTel llegan a Prometheus con labels adicionales:
+`job="payment-api"` (de `service.name`) y `otel_scope_name="app"` (del módulo).
+
+**`prometheus.yml` tras la migración:**
+
+Solo queda self-monitoring de Prometheus y el Collector. El Collector asume
+el scraping de Node Exporter, postgres_exporter y cAdvisor:
+
+```yaml
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: [otel-collector:8888]
+```
 
 **Bugs encontrados durante la implementación:**
 
 - El exporter `loki` fue eliminado del Collector contrib -> fix: usar `otlp_http/loki`
   con endpoint `http://loki:3100/otlp` (Loki 3.x acepta OTLP nativamente)
-- Los aliases `otlp`, `otlphttp`, `filelog` están deprecados -> fix: usar
-  `otlp_grpc`, `otlp_http`, `file_log`
-- El módulo `opentelemetry.sdk.logs` no existe en SDK 1.42.1 -> fix: usar
-  `opentelemetry.sdk._logs` (con underscore)
-- `start_at: beginning` en `file_log` generaba ráfaga masiva que Loki rechazaba
-  con HTTP 429 (rate limit) -> se descartó el enfoque file_log por completo
-- La correlación Tempo -> Loki usaba `container` en vez de `service_name` porque
-  Grafana 13 auto-detecta labels disponibles y sobreescribe el mapping explícito
-  -> fix: eliminar el datasource de Grafana via API y dejar que el provisioning
-  lo recree limpio
+- Los aliases `otlp`, `otlphttp`, `filelog` deprecados -> fix: nombres sin alias
+- `opentelemetry.sdk.logs` no existe en SDK 1.42.1 -> fix: `opentelemetry.sdk._logs`
+- `file_log` con `start_at: beginning` causaba HTTP 429 en Loki por ráfaga masiva
+  -> se descartó el enfoque file_log, la app envía logs directamente via OTLP
+- La correlación Tempo -> Loki seguía usando label `container` porque Grafana 13
+  auto-detecta labels disponibles -> fix: eliminar el datasource via API y reprovisionar
 - El CI fallaba con `grpc._channel._InactiveRpcError` porque la app intentaba
-  conectar a `otel-collector:4317` durante los tests -> fix: añadir
-  `OTEL_SDK_DISABLED=true` al job de tests en `ci.yml` y check en `setup_tracing()`
-  para devolver proveedores no-op cuando la variable está activa
-- `test_metrics_endpoint` fallaba porque `/metrics` ya no existe al eliminar
-  `prometheus-fastapi-instrumentator` -> fix: eliminar el test
-- `httpx` deprecado en favor de `httpx2` para `starlette.testclient` -> fix:
-  actualizar `requirements-dev.txt` a `httpx2==2.2.0`
+  conectar a `otel-collector:4317` durante los tests -> fix: `OTEL_SDK_DISABLED=true`
+  en el job de tests del CI y check en `setup_tracing()` para devolver no-op
+- `test_metrics_endpoint` fallaba porque `/metrics` ya no existe -> fix: eliminar el test
+- `httpx` deprecado en `starlette.testclient` -> fix: `httpx2==2.2.0`
 
 **Por qué se descartó `file_log` para logs:**
 
-El enfoque inicial era usar el receiver `file_log` del Collector para leer los
-logs de todos los contenedores Docker directamente del filesystem
-(`/var/lib/docker/containers`), reemplazando Promtail. Los problemas encontrados:
-
-1. Rate limit de Loki: `start_at: beginning` genera una ráfaga inicial enorme
-2. Sin container name en los logs: el Collector solo conoce la ruta del fichero,
-   no el nombre del contenedor, lo que complica la atribución de labels
-3. Complejidad operativa: permisos de ficheros, operators de parseo complejos
-
-La solución correcta es que la app envíe logs directamente via OTLP, que es
-el enfoque nativo de OpenTelemetry y elimina todos estos problemas.
+El Collector puede leer ficheros Docker directamente pero tiene tres problemas:
+rate limit de Loki por la ráfaga inicial, sin label de container name automático,
+y complejidad de parseo. La solución correcta es que la app envíe logs via OTLP.
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI --OTLP (trazas + logs + métricas)--> OTEL Collector --> Tempo
-                                                            --> Loki
-                                                            --> Prometheus
-                                                                    ↕
-                                                                 Grafana
+FastAPI --OTLP--> OTEL Collector --> Tempo / Loki / Prometheus
+                                          ↕
+                                       Grafana
 ```
 
 **URLs sin cambios:** las mismas de las fases anteriores.
@@ -928,11 +961,12 @@ FastAPI --OTLP (trazas + logs + métricas)--> OTEL Collector --> Tempo
 |---|---|
 | OTEL Collector docs | https://opentelemetry.io/docs/collector/ |
 | OTEL Collector config | https://opentelemetry.io/docs/collector/configuration/ |
-| Receivers | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver |
-| Processors | https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor |
-| Exporters | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter |
+| Prometheus receiver | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/prometheusreceiver |
+| prometheusremotewrite exporter | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/prometheusremotewriteexporter |
+| OTel Python metrics | https://opentelemetry.io/docs/languages/python/instrumentation/#metrics |
 | OTel Python logs | https://opentelemetry.io/docs/languages/python/instrumentation/#logs |
 | Loki OTLP ingestion | https://grafana.com/docs/loki/latest/send-data/otel/ |
+| Prometheus remote write | https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write |
 
 YouTube:
 - Canal **opentelemetry** oficial (Collector) -> https://www.youtube.com/@otel-official/search?query=collector
@@ -976,200 +1010,6 @@ FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
 
 ---
 
-### ⚫ Fase 7: Métricas OTLP puro, todo por el Collector
-
-**Concepto:** en la Fase 5 el Collector gestiona trazas y logs, pero las
-métricas siguen usando el modelo pull de Prometheus (scraping directo a la app).
-En entornos avanzados todo pasa por el Collector, incluidas las métricas.
-La app tiene un único punto de salida: el Collector.
-
-**¿Por qué no se implementó en la Fase 5?**
-
-Los exporters de infraestructura (Node Exporter, postgres_exporter, cAdvisor)
-no hablan OTLP: solo exponen `/metrics`. El Collector tendría que scrapearlos
-igualmente con el receiver `prometheus`. Eso hace que el modelo pull no
-desaparezca del todo, y añade complejidad sin un beneficio claro en ese momento.
-
-En la Fase 7 se aborda como mejora independiente, ya con el stack completo.
-
-**Modelo actual (Fases 1-6):**
-```
-Prometheus --scraping--> FastAPI /metrics
-Prometheus --scraping--> Node Exporter :9100
-Prometheus --scraping--> postgres_exporter :9187
-Prometheus --scraping--> cAdvisor :8080
-```
-
-**Modelo objetivo (Fase 7):**
-```
-FastAPI --OTLP métricas--> Collector --prometheusremotewrite--> Prometheus
-Collector --prometheus receiver--scraping--> Node Exporter
-Collector --prometheus receiver--scraping--> postgres_exporter
-Collector --prometheus receiver--scraping--> cAdvisor
-```
-
-Prometheus deja de scrapear la app directamente. El Collector actúa como
-intermediario para todas las señales de la app: métricas, logs y trazas.
-
-**Qué hay que hacer:**
-
-**1. Añadir métricas OTLP a `app.py`:**
-
-```python
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-from opentelemetry.metrics import set_meter_provider
-
-def setup_metrics(resource):
-    metric_exporter = OTLPMetricExporter(
-        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
-        insecure=True,
-    )
-    reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=15000)
-    meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
-    set_meter_provider(meter_provider)
-    return meter_provider
-```
-
-Migrar los `Counter` e `Histogram` de `prometheus_client` a `opentelemetry.metrics`:
-
-```python
-meter = meter_provider.get_meter(__name__)
-payments_created_total = meter.create_counter(
-    "payments_created_total",
-    description="Total de pagos creados exitosamente",
-)
-payments_amount_euros = meter.create_histogram(
-    "payments_amount_euros",
-    description="Distribución de importes de pago",
-)
-```
-
-**2. Actualizar `otel-collector-config.yml`:**
-
-Añadir el receiver `prometheus` para los exporters de infraestructura y el
-pipeline de métricas:
-
-```yaml
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: 0.0.0.0:4317
-      http:
-        endpoint: 0.0.0.0:4318
-  prometheus:
-    config:
-      scrape_configs:
-        - job_name: node-exporter
-          static_configs:
-            - targets: [node-exporter:9100]
-        - job_name: postgres-exporter
-          static_configs:
-            - targets: [postgres-exporter:9187]
-        - job_name: cadvisor
-          static_configs:
-            - targets: [cadvisor:8080]
-
-exporters:
-  otlp_grpc/tempo:
-    endpoint: tempo:4317
-    tls:
-      insecure: true
-  otlp_http/loki:
-    endpoint: http://loki:3100/otlp
-    tls:
-      insecure: true
-  prometheusremotewrite:
-    endpoint: http://prometheus:9090/api/v1/write
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      processors: [memory_limiter, batch]
-      exporters: [otlp_grpc/tempo]
-    logs:
-      receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
-      exporters: [otlp_http/loki]
-    metrics:
-      receivers: [otlp, prometheus]
-      processors: [memory_limiter, batch, resource]
-      exporters: [prometheusremotewrite]
-```
-
-**3. Activar remote write en Prometheus:**
-
-Prometheus necesita tener activado el receiver de remote write. Añadir al
-`command` en `docker-compose.yml`:
-
-```yaml
-command:
-  - "--config.file=/etc/prometheus/prometheus.yml"
-  - "--storage.tsdb.path=/prometheus"
-  - "--storage.tsdb.retention.time=7d"
-  - "--web.enable-remote-write-receiver"
-```
-
-**4. Actualizar `prometheus.yml`:**
-
-Eliminar los scrape jobs de la app y los exporters (ya los scrapeará el Collector):
-
-```yaml
-global:
-  scrape_interval: 15s
-
-scrape_configs:
-  - job_name: prometheus
-    static_configs:
-      - targets: [localhost:9090]
-```
-
-**5. Eliminar `prometheus-fastapi-instrumentator` de `requirements.txt`:**
-
-Ya no es necesario porque las métricas se envían via OTLP.
-
-**Dependencias nuevas a añadir en `requirements.txt`:**
-
-```
-opentelemetry-sdk-metrics==1.42.1
-opentelemetry-exporter-otlp-proto-grpc==1.42.1  (ya está)
-```
-
-**Nota:** `opentelemetry-sdk-metrics` puede estar incluido en `opentelemetry-sdk`.
-Verificar con `pip show opentelemetry-sdk` si ya incluye el módulo `metrics`.
-
-**Resultado final:**
-
-```
-FastAPI --OTLP (métricas + logs + trazas)--> OTEL Collector
-                                                  |
-                          +-----------------------+------------------------+
-                          |                       |                        |
-                 prometheusremotewrite        otlp_http/loki        otlp_grpc/tempo
-                          |                       |                        |
-                     Prometheus                 Loki                    Tempo
-                          |
-              (también recibe métricas
-               de Node Exporter, postgres,
-               cAdvisor via prometheus receiver)
-```
-
-La app tiene un único punto de salida. El Collector centraliza todo.
-
-**Para profundizar:**
-
-| Recurso | Enlace |
-|---|---|
-| OTel Python metrics | https://opentelemetry.io/docs/languages/python/instrumentation/#metrics |
-| OTEL Collector prometheus receiver | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/prometheusreceiver |
-| OTEL Collector prometheusremotewrite exporter | https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/prometheusremotewriteexporter |
-| Prometheus remote write | https://prometheus.io/docs/prometheus/latest/configuration/configuration/#remote_write |
-
----
-
 <a name="6-correlacion-entre-las-tres-senales"></a>
 ## 🔗 6. Correlación entre las tres señales
 
@@ -1188,27 +1028,15 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 ---
 
 <a name="7-metricas-expuestas-por-la-api"></a>
-## 📊 7. Métricas expuestas por la API
-
-**Fases 2-4** (via `prometheus-fastapi-instrumentator` + `prometheus_client`, endpoint `/metrics`):
+## 📊 7. Métricas expuestas por la API (Fase 2 en adelante)
 
 | Métrica | Tipo | Descripción |
 |---|---|---|
 | `http_requests_total` | Counter | Requests por endpoint y status (auto) |
 | `http_request_duration_seconds` | Histogram | Latencia HTTP (auto) |
 | `payments_created_total` | Counter | Pagos creados por moneda (custom) |
+| `payments_failed_total` | Counter | Pagos fallidos por motivo (custom) |
 | `payments_amount_euros` | Histogram | Distribución de importes (custom) |
-
-**Fase 5 en adelante** (via OTel metrics SDK + OTLP al Collector + remote write a Prometheus):
-
-| Métrica | Tipo | Labels | Descripción |
-|---|---|---|---|
-| `payments_created_total` | Counter | `currency`, `job`, `otel_scope_name` | Pagos creados (custom) |
-| `payments_amount_euros` | Histogram | `currency`, `job`, `otel_scope_name` | Distribución de importes (custom) |
-| `http.server.request.duration` | Histogram | `http.method`, `http.route`, `http.status_code` | Latencia HTTP (auto via FastAPIInstrumentor) |
-
-El endpoint `/metrics` desaparece en la Fase 5. Las métricas se envían via OTLP
-al Collector, que las reenvía a Prometheus via remote write.
 
 ---
 
