@@ -61,6 +61,8 @@ logger = structlog.get_logger()
 # Tracing, Logging y Metrics
 # ---------------------------------------------------------------------------
 def setup_tracing():
+    if os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
+        return trace.get_tracer(__name__), MeterProvider().get_meter(__name__)
     resource = Resource.create({SERVICE_NAME: "payment-api"})
 
     # Trazas
