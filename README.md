@@ -910,8 +910,8 @@ Las métricas OTel llegan a Prometheus con labels adicionales:
 
 **`prometheus.yml` tras la migración:**
 
-Solo queda self-monitoring de Prometheus y el Collector. El Collector asume
-el scraping de Node Exporter, postgres_exporter y cAdvisor:
+Prometheus scraping directamente los exporters de infraestructura (no via Collector).
+El Collector solo gestiona métricas OTLP de la app:
 
 ```yaml
 scrape_configs:
@@ -922,7 +922,30 @@ scrape_configs:
   - job_name: otel-collector
     static_configs:
       - targets: [otel-collector:8888]
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: [node-exporter:9100]
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: [postgres-exporter:9187]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: [cadvisor:8080]
 ```
+
+**¿Por qué los exporters de infraestructura no pasan por el Collector?**
+
+El pipeline `prometheus receiver -> prometheusremotewrite` rompe `rate()` en Grafana.
+Los counters (node_cpu_seconds_total, node_network_bytes_total) pierden su semántica
+durante la conversión interna OTEL. Además, si Prometheus scraping directamente Y el
+Collector envía via remote write simultáneamente, aparecen datos duplicados con labels
+extra (`otel_scope_name`) que ensucian los dashboards durante 7 días (retención).
+
+La solución definitiva: exporters de infraestructura scrapeados directamente por
+Prometheus. Métricas de la app via OTLP al Collector. Remote write solo para la app.
 
 **Bugs encontrados durante la implementación:**
 
@@ -939,6 +962,11 @@ scrape_configs:
   en el job de tests del CI y check en `setup_tracing()` para devolver no-op
 - `test_metrics_endpoint` fallaba porque `/metrics` ya no existe -> fix: eliminar el test
 - `httpx` deprecado en `starlette.testclient` -> fix: `httpx2==2.2.0`
+- El pipeline `prometheus receiver -> prometheusremotewrite` rompe `rate()` en dashboards
+  de Grafana: los counters (node_cpu_seconds_total, node_network_*) pierden semántica
+  en la conversión interna OTEL y aparecen como datos duplicados con labels extra
+  (`otel_scope_name`) -> fix: Prometheus vuelve a scrapear directamente Node Exporter,
+  postgres_exporter y cAdvisor; el Collector solo gestiona métricas OTLP de la app
 
 **Por qué se descartó `file_log` para logs:**
 
@@ -948,7 +976,8 @@ y complejidad de parseo. La solución correcta es que la app envíe logs via OTL
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI --OTLP--> OTEL Collector --> Tempo / Loki / Prometheus
+FastAPI --OTLP (trazas + logs + métricas app)--> OTEL Collector --> Tempo / Loki / Prometheus
+Prometheus --scraping directo--> Node Exporter / postgres_exporter / cAdvisor
                                           ↕
                                        Grafana
 ```
