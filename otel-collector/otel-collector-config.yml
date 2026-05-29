@@ -64,7 +64,6 @@ service:
       exporters: [otlp_http/loki]
 
     metrics:
-      receivers: [otlp, prometheus]
+      receivers: [otlp]
       processors: [memory_limiter, batch, resource]
       exporters: [prometheusremotewrite]
-      
