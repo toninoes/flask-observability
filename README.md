@@ -888,6 +888,14 @@ como campos indexados en Loki, lo que hace la correlación más robusta.
   Grafana 13 auto-detecta labels disponibles y sobreescribe el mapping explícito
   -> fix: eliminar el datasource de Grafana via API y dejar que el provisioning
   lo recree limpio
+- El CI fallaba con `grpc._channel._InactiveRpcError` porque la app intentaba
+  conectar a `otel-collector:4317` durante los tests -> fix: añadir
+  `OTEL_SDK_DISABLED=true` al job de tests en `ci.yml` y check en `setup_tracing()`
+  para devolver proveedores no-op cuando la variable está activa
+- `test_metrics_endpoint` fallaba porque `/metrics` ya no existe al eliminar
+  `prometheus-fastapi-instrumentator` -> fix: eliminar el test
+- `httpx` deprecado en favor de `httpx2` para `starlette.testclient` -> fix:
+  actualizar `requirements-dev.txt` a `httpx2==2.2.0`
 
 **Por qué se descartó `file_log` para logs:**
 
@@ -905,11 +913,11 @@ el enfoque nativo de OpenTelemetry y elimina todos estos problemas.
 
 **Al terminar esta fase tendrás:**
 ```
-FastAPI --OTLP gRPC--> OTEL Collector --> Tempo
-                                      --> Loki
-                                            ↕
-                                         Grafana
-Prometheus --scraping--> FastAPI /metrics (sin cambio)
+FastAPI --OTLP (trazas + logs + métricas)--> OTEL Collector --> Tempo
+                                                            --> Loki
+                                                            --> Prometheus
+                                                                    ↕
+                                                                 Grafana
 ```
 
 **URLs sin cambios:** las mismas de las fases anteriores.
@@ -1180,15 +1188,27 @@ El campo `trace_id` es el hilo conductor de las 3 señales en Grafana:
 ---
 
 <a name="7-metricas-expuestas-por-la-api"></a>
-## 📊 7. Métricas expuestas por la API (Fase 2 en adelante)
+## 📊 7. Métricas expuestas por la API
+
+**Fases 2-4** (via `prometheus-fastapi-instrumentator` + `prometheus_client`, endpoint `/metrics`):
 
 | Métrica | Tipo | Descripción |
 |---|---|---|
 | `http_requests_total` | Counter | Requests por endpoint y status (auto) |
 | `http_request_duration_seconds` | Histogram | Latencia HTTP (auto) |
 | `payments_created_total` | Counter | Pagos creados por moneda (custom) |
-| `payments_failed_total` | Counter | Pagos fallidos por motivo (custom) |
 | `payments_amount_euros` | Histogram | Distribución de importes (custom) |
+
+**Fase 5 en adelante** (via OTel metrics SDK + OTLP al Collector + remote write a Prometheus):
+
+| Métrica | Tipo | Labels | Descripción |
+|---|---|---|---|
+| `payments_created_total` | Counter | `currency`, `job`, `otel_scope_name` | Pagos creados (custom) |
+| `payments_amount_euros` | Histogram | `currency`, `job`, `otel_scope_name` | Distribución de importes (custom) |
+| `http.server.request.duration` | Histogram | `http.method`, `http.route`, `http.status_code` | Latencia HTTP (auto via FastAPIInstrumentor) |
+
+El endpoint `/metrics` desaparece en la Fase 5. Las métricas se envían via OTLP
+al Collector, que las reenvía a Prometheus via remote write.
 
 ---
 
