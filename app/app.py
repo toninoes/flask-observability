@@ -2,8 +2,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
-from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import Counter, Histogram
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import create_engine, Column, String, Numeric, DateTime
 from sqlalchemy.orm import DeclarativeBase, Session
@@ -18,6 +16,10 @@ from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
 from opentelemetry._logs import set_logger_provider
+from opentelemetry.metrics import set_meter_provider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 
 import uuid
 import os
@@ -56,7 +58,7 @@ logger = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
-# Tracing
+# Tracing, Logging y Metrics
 # ---------------------------------------------------------------------------
 def setup_tracing():
     resource = Resource.create({SERVICE_NAME: "payment-api"})
@@ -81,9 +83,22 @@ def setup_tracing():
     handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
     logging.getLogger().addHandler(handler)
 
-    return trace.get_tracer(__name__)
+    # Metricas
+    metric_exporter = OTLPMetricExporter(
+        endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317"),
+        insecure=True,
+    )
+    reader = PeriodicExportingMetricReader(
+        metric_exporter,
+        export_interval_millis=15000,
+    )
+    meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
+    set_meter_provider(meter_provider)
+    meter = meter_provider.get_meter(__name__)
 
-tracer = setup_tracing()
+    return trace.get_tracer(__name__), meter
+
+tracer, meter = setup_tracing()
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +149,21 @@ class PaymentsListResponse(BaseModel):
     payments: list[PaymentResponse]
     total: int
 
+
 # ---------------------------------------------------------------------------
 # Custom metrics
 # ---------------------------------------------------------------------------
-payments_created_total = Counter(
+payments_created_total = meter.create_counter(
     "payments_created_total",
-    "Total de pagos creados exitosamente",
-    ["currency"],
+    description="Total de pagos creados exitosamente",
 )
 
-payments_amount_euros = Histogram(
+payments_amount_euros = meter.create_histogram(
     "payments_amount_euros",
-    "Distribución de importes de pago",
-    ["currency"],
-    buckets=[10, 50, 100, 500, 1000, 5000, 10000],
+    description="Distribucion de importes de pago",
+    unit="EUR",
 )
+
 
 # ---------------------------------------------------------------------------
 # App
@@ -160,9 +175,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Payment API", version="1.0.0", lifespan=lifespan)
-Instrumentator().instrument(app).expose(app)
 FastAPIInstrumentor.instrument_app(app)
 SQLAlchemyInstrumentor().instrument(engine=engine)
+
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -197,8 +212,8 @@ def create_payment(payment: PaymentRequest):
             session.add(new_payment)
             session.commit()
             session.refresh(new_payment)
-            payments_created_total.labels(currency=payment.currency).inc()
-            payments_amount_euros.labels(currency=payment.currency).observe(float(new_payment.amount))
+            payments_created_total.add(1, {"currency": payment.currency})
+            payments_amount_euros.record(float(new_payment.amount), {"currency": payment.currency})
             logger.info(
                 "payment_created",
                 payment_id=new_payment.id,
@@ -207,4 +222,3 @@ def create_payment(payment: PaymentRequest):
             )
             span.set_attribute("payment.id", new_payment.id)
             return PaymentResponse.model_validate(new_payment)
- 
