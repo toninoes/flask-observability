@@ -1005,29 +1005,160 @@ YouTube:
 
 ### 🔴 Fase 6: Retención larga con Thanos y MinIO
 
-**Concepto:** Prometheus solo retiene datos 7-15 días. Para retención
-histórica de meses o años en producción se usa Thanos con object storage S3-compatible.
-MinIO actúa como ese object storage en local.
+**Concepto:** Prometheus guarda métricas en disco local con retención limitada
+(7 días en este proyecto). Si el contenedor muere, pierdes todo. Si quieres
+consultar métricas de hace 3 meses, no puedes. Thanos resuelve ambos problemas.
 
-**Vídeo previo recomendado:**
-YouTube -> `Thanos Prometheus long term storage tutorial` -> canal **That DevOps Guy**
+**¿Qué es Thanos?**
+
+Thanos es una extensión de Prometheus que añade retención larga, alta disponibilidad
+y queries federadas a escala. Se compone de varios procesos independientes que
+trabajan juntos. En esta fase usamos tres:
+
+**Thanos Sidecar:** corre junto a Prometheus en el mismo pod/contenedor-group.
+Hace dos cosas: expone los datos de Prometheus via gRPC (StoreAPI) para que
+Thanos Query pueda consultarlos en tiempo real, y sube los bloques TSDB de
+Prometheus a MinIO cada 2 horas.
+
+**Thanos Store Gateway:** expone el contenido de MinIO (bloques históricos)
+via gRPC (StoreAPI). Permite consultar datos que ya no están en Prometheus
+local porque han superado la retención.
+
+**Thanos Query:** el punto de entrada único para Grafana. Recibe una query
+PromQL, la distribuye en paralelo a todos los endpoints (Sidecar + Store),
+recoge los resultados, los deduplica y devuelve una respuesta unificada:
+
+```
+Grafana --> Thanos Query --> Thanos Sidecar --> Prometheus (datos recientes)
+                        --> Thanos Store    --> MinIO (datos históricos)
+```
+
+**¿Qué es MinIO?**
+
+MinIO es un object storage de alto rendimiento compatible con la API S3 de AWS.
+En producción se usaría S3, GCS o Azure Blob. En local MinIO es el equivalente:
+almacena los bloques de métricas comprimidos que Thanos sube. Un año de métricas
+de un sistema pequeño como este ocupa menos de 1 GB.
+
+**¿Por qué la deduplicación importa?**
+
+Cuando tienes varias instancias de Prometheus (HA setup), cada una scraping los
+mismos targets, Thanos Query recibe series duplicadas. Sin deduplicación verías
+el doble de datos en los gráficos. Con `--query.replica-label=replica`, Thanos
+Query fusiona las series que tienen el mismo `cluster` pero distinto `replica`:
+
+```
+Prometheus-1 {cluster="local", replica="prometheus-1"} -> series A
+Prometheus-2 {cluster="local", replica="prometheus-2"} -> series B (=A)
+
+Thanos Query deduplica -> devuelve solo una serie sin el label replica
+```
+
+En este proyecto solo hay un Prometheus, pero la deduplicación ya está
+configurada para cuando añadas una segunda instancia.
+
+**Requisito crítico: deshabilitar compactación en Prometheus**
+
+Thanos exige que Prometheus tenga la compactación local desactivada.
+Si Prometheus compacta bloques antes de que Thanos los suba a MinIO,
+pueden perderse datos o corromperse bloques. El fix es igualar
+`min-block-duration` y `max-block-duration` a `2h`:
+
+```yaml
+command:
+  - "--storage.tsdb.min-block-duration=2h"
+  - "--storage.tsdb.max-block-duration=2h"
+```
+
+Con esto Prometheus solo crea bloques de exactamente 2 horas y nunca los
+compacta. Thanos asume la responsabilidad de compactar en el object storage.
+
+**Flujo completo de un bloque:**
+```
+1. Prometheus scraping durante 2h -> crea bloque TSDB local en /prometheus
+2. Thanos Sidecar detecta el bloque nuevo
+3. Sidecar crea directorio staging /prometheus/thanos
+4. Sidecar sube el bloque comprimido a MinIO/thanos/<ulid>/
+5. Thanos Store detecta el nuevo bloque en MinIO
+6. Thanos Query puede ahora servir datos de ese bloque via Store
+7. Después de 7 días Prometheus borra su copia local
+8. El bloque sigue disponible via MinIO para siempre (o hasta que lo borres)
+```
+
+**¿Qué es el ULID?**
+
+Cada bloque tiene un identificador único llamado ULID (Universally Unique
+Lexicographically Sortable Identifier), como `01KSW4VE0R0ZDS07E1BRNV4P2D`.
+Son ordenables cronológicamente: los primeros caracteres codifican el timestamp.
+
+**Cambios en `prometheus.yml`:**
+
+Se añaden `external_labels` para identificar la instancia de Prometheus.
+El Sidecar los lee y los adjunta a todos los bloques que sube a MinIO:
+
+```yaml
+global:
+  external_labels:
+    cluster: local
+    replica: prometheus-1
+```
+
+**Grafana apunta a Thanos Query:**
+
+El datasource de Prometheus en Grafana cambia de `http://prometheus:9090`
+a `http://thanos-query:10902`. Thanos Query es compatible con la API de
+Prometheus, así que todos los dashboards siguen funcionando sin cambios.
+
+**Situación del ecosistema de imágenes MinIO (mayo 2026):**
+
+- MinIO dejó de publicar imágenes en Docker Hub y Quay en octubre 2025
+- Bitnami dejará de publicar en AWS ECR Gallery en junio 2026
+- La opción más robusta a largo plazo es Chainguard (`cgr.dev/chainguard/minio`)
+  que ofrece imágenes gratuitas zero-CVE actualizadas diariamente
+- Para este proyecto se usan las últimas imágenes oficiales de Docker Hub
+  (`minio/minio:RELEASE.2025-07-23T15-54-02Z`) que siguen siendo accesibles
+  y válidas para desarrollo local
 
 **Qué se hace:**
-- Levantar MinIO con buckets `thanos`, `loki`, `tempo`
-- Thanos Sidecar junto a Prometheus: sube bloques TSDB a MinIO cada 2h
-- Thanos Store Gateway: permite consultar datos históricos en MinIO
-- Thanos Query: federa Prometheus local con datos históricos
-- Loki y Tempo también persisten en MinIO
+- Añadir `external_labels` a Prometheus (`cluster`, `replica`)
+- Deshabilitar compactación local de Prometheus (`min-block-duration=max-block-duration=2h`)
+- Levantar MinIO con bucket `thanos` creado automáticamente via `minio-init`
+- Thanos Sidecar junto a Prometheus: lee TSDB y sube bloques a MinIO
+- Thanos Store Gateway: sirve datos históricos desde MinIO via gRPC
+- Thanos Query: federa Sidecar + Store con deduplicación por `replica`
 - Grafana apunta a Thanos Query en vez de Prometheus directamente
 
-**Al terminar esta fase tendrás el stack completo:**
+**Ficheros nuevos/modificados:**
 ```
-FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
-                          -> Loki ---------------------------> MinIO
-                          -> Tempo --------------------------> MinIO
-                                    Thanos Store Gateway <---- MinIO
-                                    Thanos Query
-                                         ↓
+thanos/
+└── bucket-config.yml           # conexión S3 a MinIO
+prometheus/
+└── prometheus.yml              # external_labels + compactación desactivada
+grafana/provisioning/datasources/
+└── prometheus.yml              # url cambia a thanos-query:10902
+docker-compose.yml              # minio, minio-init, thanos-sidecar,
+                                # thanos-store, thanos-query
+```
+
+**Bugs encontrados durante la implementación:**
+
+- Thanos Sidecar rechazaba arrancar porque Prometheus tenía compactación activa
+  (`TSDB Max time is 16h48m and Min time is 2h`) -> fix: añadir
+  `--storage.tsdb.min-block-duration=2h --storage.tsdb.max-block-duration=2h`
+- Thanos Sidecar no podía crear `/prometheus/thanos` para staging de uploads
+  por permisos (non-root vs volumen Docker creado como root) -> fix: `user: "0"`
+- Thanos Store no podía crear directorio `data` local -> fix: `--data-dir=/tmp/thanos-store`
+- `bitnami/minio` y `bitnami/minio-client` ya no son gratuitos en Docker Hub
+  ni en AWS ECR Gallery -> fix: usar últimas imágenes de `minio/minio` en Docker Hub
+
+**Al terminar esta fase tendrás:**
+```
+FastAPI --OTLP--> OTEL Collector --> Prometheus <--> Thanos Sidecar --> MinIO
+                                --> Loki                                  |
+                                --> Tempo            Thanos Store <-------+
+Prometheus --scraping--> Node Exporter / postgres_exporter / cAdvisor
+                              Thanos Query (Sidecar + Store)
+                                         ↕
                                       Grafana
 ```
 
@@ -1036,6 +1167,23 @@ FastAPI -> OTEL Collector -> Prometheus <-> Thanos Sidecar --> MinIO
 |---|---|
 | MinIO Console | http://localhost:9001 (minioadmin/minioadmin) |
 | Thanos Query UI | http://localhost:10902 |
+| Thanos Stores | http://localhost:10902/stores |
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Thanos docs | https://thanos.io/tip/thanos/getting-started.md/ |
+| Thanos Sidecar | https://thanos.io/tip/components/sidecar.md/ |
+| Thanos Store | https://thanos.io/tip/components/store.md/ |
+| Thanos Query | https://thanos.io/tip/components/query.md/ |
+| Thanos deduplication | https://thanos.io/tip/thanos/query.md/#deduplication |
+| MinIO docs | https://min.io/docs/minio/linux/index.html |
+| Chainguard MinIO | https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/minio/ |
+
+YouTube:
+- Canal **That DevOps Guy** (Thanos) -> https://www.youtube.com/@MarcelDempers/search?query=thanos
+- Canal **Grafana** (Thanos) -> https://www.youtube.com/@Grafana/search?query=thanos
 
 ---
 
