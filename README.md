@@ -731,6 +731,63 @@ Y muestra el log exacto de ese pago con todos sus campos.
   Loki -> fix: mapear `service.name` al label `container` en el datasource de
   Tempo, que sí existe en Promtail
 
+**Upgrade a Tempo 3.0 (PR Dependabot #13):**
+
+Tempo 3.0 es un major release con breaking changes. El CI de Dependabot pasa
+en verde porque solo valida que la imagen arranca, no que el config es válido.
+Hay que probarlo manualmente antes de mergear.
+
+Breaking change principal: el campo `compactor` fue eliminado del config.
+En Tempo 3.0 la compactación y retención las gestiona el nuevo `backend_scheduler`
+con sus componentes `block-builders`, `live-stores` y `backend-worker`.
+
+Config en Tempo 2.x que dejó de funcionar:
+```yaml
+compactor:
+  compaction:
+    block_retention: 48h
+```
+
+Error al arrancar con Tempo 3.0:
+```
+failed parsing config: field compactor not found in type app.Config
+```
+
+Fix: eliminar el bloque `compactor` del config. La retención por defecto en
+Tempo 3.0 es 14 días, suficiente para este proyecto. Si necesitas configurarla
+explícitamente, se hace bajo `backend_scheduler.provider`.
+
+Config mínimo funcional con Tempo 3.0:
+```yaml
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/blocks
+    wal:
+      path: /tmp/tempo/wal
+```
+
+Tempo 3.0 también introduce en modo monolítico (nuestro caso):
+- `live_store` para servir trazas recientes desde memoria
+- `backend_scheduler` para compactación y retención job-based
+- `retention provider` como componente independiente
+- Nuevas arquitecturas desacopladas para modo microservicios (Kafka-based)
+
+En modo monolítico todo corre en un único proceso sin Kafka, igual que en 2.x.
+
 **Al terminar esta fase tendrás:**
 ```
 FastAPI --OTLP HTTP--> Tempo
