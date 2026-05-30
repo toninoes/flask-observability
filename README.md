@@ -1019,6 +1019,20 @@ Prometheus. Métricas de la app via OTLP al Collector. Remote write solo para la
   en el job de tests del CI y check en `setup_tracing()` para devolver no-op
 - `test_metrics_endpoint` fallaba porque `/metrics` ya no existe -> fix: eliminar el test
 - `httpx` deprecado en `starlette.testclient` -> fix: `httpx2==2.2.0`
+- En OTEL Collector 0.153.0 el campo `address` bajo `service.telemetry.metrics`
+  fue eliminado (`MetricsConfigV030` has invalid keys: address) -> fix: usar
+  el nuevo formato `readers` con exporter Prometheus explícito:
+  ```yaml
+  service:
+    telemetry:
+      metrics:
+        readers:
+          - pull:
+              exporter:
+                prometheus:
+                  host: 0.0.0.0
+                  port: 8888
+  ```
 - El pipeline `prometheus receiver -> prometheusremotewrite` rompe `rate()` en dashboards
   de Grafana: los counters (node_cpu_seconds_total, node_network_*) pierden semántica
   en la conversión interna OTEL y aparecen como datos duplicados con labels extra
