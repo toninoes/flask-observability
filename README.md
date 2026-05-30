@@ -23,7 +23,8 @@ de pagos en FastAPI y desplegado en local con Docker.
 8. [Campos de log](#8-campos-de-log)
 9. [Notas importantes](#9-notas-importantes)
 10. [Dependabot](#10-dependabot)
-11. [Referencias](#11-referencias)
+11. [Validaciones del stack](#11-validaciones)
+12. [Referencias](#12-referencias)
 
 ---
 
@@ -1344,8 +1345,202 @@ y actualizarlas a mano cuando se actualice la imagen principal de PostgreSQL.
 
 ---
 
-<a name="11-referencias"></a>
-## 📚 11. Referencias
+<a name="11-validaciones"></a>
+## ✅ 11. Validaciones del stack
+
+Este apartado recoge los comandos de validación del stack completo. Úsalos
+siempre que actualices una imagen, mergees un PR de Dependabot, o simplemente
+quieras verificar que todo funciona después de un reinicio.
+
+**Regla general para actualizaciones de imagen:** antes de mergear un PR de
+Dependabot o cambiar una imagen manualmente, prueba siempre en local con
+`docker compose up -d --force-recreate <servicio>` y ejecuta los checks
+correspondientes a ese servicio. El CI solo valida que la API arranca y pasa
+los tests de Python; no valida la configuración del stack de observabilidad.
+
+---
+
+### Stack
+
+```bash
+# Estado de todos los contenedores
+docker compose ps --format "table {{.Name}}\t{{.Status}}"
+
+# Errores críticos en los últimos 5 minutos
+# Ignora level=info porque algunos servicios loguean "error" como parte de mensajes informativos
+docker compose logs --since 5m 2>&1 | grep -iE "error|fatal|panic" | grep -v "level=info"
+```
+
+Todos los contenedores deben estar `Up`. Errores transitorios de conexión
+durante reinicios son normales y se resuelven solos.
+
+---
+
+### Métricas
+
+```bash
+# Genera un pago de prueba
+curl -s -X POST http://localhost:8000/payments \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 99.99, "currency": "EUR"}' > /dev/null
+
+sleep 20
+
+# Verifica que la métrica llega a Prometheus via Thanos Query
+# Debe devolver cluster="local" y job="payment-api"
+curl -s "http://localhost:10902/api/v1/query?query=payments_created_total" | \
+  python3 -m json.tool | grep -E "cluster|job|value"
+
+# Verifica que Node Exporter llega (scraping directo de Prometheus)
+curl -s "http://localhost:10902/api/v1/query?query=node_cpu_seconds_total{mode='idle'}" | \
+  python3 -m json.tool | grep -E "instance|job" | head -4
+
+# Verifica métricas internas del OTEL Collector
+curl -s http://localhost:8888/metrics | grep "otelcol_receiver_accepted" | head -3
+```
+
+Si `payments_created_total` no aparece, el Collector no está recibiendo datos
+de la app. Revisa `docker compose logs otel-collector --tail 20`.
+
+Si `node_cpu_seconds_total` no aparece, Prometheus no está scrapeando Node
+Exporter. Revisa los targets en `http://localhost:9090/targets`.
+
+---
+
+### Logs
+
+```bash
+# Verifica que Loki recibe logs con el label service_name="payment-api"
+# Debe devolver "stream" y "values" en la respuesta
+curl -s --get \
+  --data-urlencode 'query={service_name="payment-api"}' \
+  --data-urlencode 'limit=1' \
+  'http://localhost:3100/loki/api/v1/query_range' | \
+  python3 -m json.tool | grep -E '"stream"|"values"' | head -4
+
+# Verifica el label index de Loki (debe incluir service_name)
+curl -s 'http://localhost:3100/loki/api/v1/labels' | python3 -m json.tool | grep service_name
+```
+
+Si Loki no tiene logs, el OTEL Collector no está exportando a Loki. Revisa
+`docker compose logs otel-collector --tail 20` buscando errores en el pipeline
+de logs.
+
+---
+
+### Trazas
+
+```bash
+# Genera tráfico y verifica que Tempo recibe trazas
+curl -s -X POST http://localhost:8000/payments \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 25.00, "currency": "EUR"}' > /dev/null
+
+sleep 3
+
+# Busca trazas recientes (Tempo 3.0+)
+curl -s 'http://localhost:3200/api/search' | \
+  python3 -m json.tool | grep -E "traceID|rootServiceName"
+
+# Verifica que Tempo está listo
+curl -s http://localhost:3200/ready
+```
+
+Debe devolver `ready` y una lista de trazas con `rootServiceName: payment-api`.
+
+En Tempo 3.0 el `backend_scheduler` loga `no jobs found` periódicamente cuando
+no hay bloques pendientes de compactar. Es ruido esperado, no un error real.
+
+---
+
+### Thanos
+
+```bash
+# Verifica que Thanos Query ve tanto el Sidecar como el Store
+# Debe aparecer thanos-sidecar:10901 (Sidecar) y thanos-store:10901 (Store)
+curl -s http://localhost:10902/api/v1/stores | python3 -m json.tool | grep -E "name|healthy"
+
+# Verifica que el Sidecar tiene los external_labels correctos
+# Debe mostrar cluster="local" y replica="prometheus-1"
+docker compose logs thanos-sidecar --tail 5 | grep "external_labels"
+
+# Verifica que MinIO tiene bloques subidos
+curl -s "http://localhost:10902/api/v1/query?query=thanos_shipper_uploads_total" | \
+  python3 -m json.tool | grep value
+```
+
+Si el Sidecar no aparece en Stores, revisa que Prometheus tiene `external_labels`
+y `min-block-duration=max-block-duration=2h` en su comando.
+
+---
+
+### Correlación traza-log
+
+Esta validación verifica que el flujo completo funciona: genera un pago, copia
+su `trace_id` desde Grafana Tempo y busca el log correspondiente en Loki.
+
+```bash
+# 1. Genera un pago
+curl -s -X POST http://localhost:8000/payments \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 200.00, "currency": "EUR"}'
+# Copia el payment_id de la respuesta
+
+# 2. En Grafana: Explore -> Tempo -> busca trazas recientes
+#    Abre la traza -> icono de logs -> debe abrir Loki con el trace_id
+#    La query generada debe usar {service_name="payment-api"}
+
+# 3. Validación via API directa con un trace_id conocido
+TRACE_ID=$(curl -s 'http://localhost:3200/api/search' | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)['traces'][0]['traceID'])")
+
+echo "trace_id: $TRACE_ID"
+
+curl -s --get \
+  --data-urlencode "{service_name=\"payment-api\"} | json | trace_id=\"$TRACE_ID\"" \
+  --data-urlencode 'limit=1' \
+  'http://localhost:3100/loki/api/v1/query_range' | \
+  python3 -m json.tool | grep -E "trace_id|payment_id" | head -4
+```
+
+---
+
+### Validación rápida post-actualización de imagen
+
+Cuando Dependabot abre un PR o cambias una imagen manualmente, sigue este flujo:
+
+```bash
+# 1. Actualiza la imagen en docker-compose.yml y levanta solo ese servicio
+docker compose up -d --force-recreate <servicio>
+
+# 2. Espera que arranque y verifica logs
+sleep 10
+docker compose logs <servicio> --tail 20
+
+# 3. Ejecuta el check específico del servicio según la tabla:
+#
+# Servicio              Check principal
+# prometheus            curl -s http://localhost:9090/-/ready
+# grafana               curl -s http://localhost:3000/api/health
+# loki                  curl -s http://localhost:3100/ready
+# tempo                 curl -s http://localhost:3200/ready
+# otel-collector        curl -s http://localhost:8888/metrics | head -3
+# thanos-query          curl -s http://localhost:10902/-/ready
+# thanos-sidecar        docker compose logs thanos-sidecar --tail 5
+# thanos-store          docker compose logs thanos-store --tail 5
+# minio                 curl -s http://localhost:9000/minio/health/live
+
+# 4. Si el servicio arranca, verifica el pipeline end-to-end:
+#    Genera un pago y comprueba que la métrica, log y traza llegan a Grafana
+
+# 5. Si algo falla, revierte la imagen:
+docker compose up -d --force-recreate <servicio>  # con la imagen anterior en docker-compose.yml
+```
+
+---
+
+<a name="12-referencias"></a>
+## 📚 12. Referencias
 
 | Herramienta | Documentación |
 |---|---|
