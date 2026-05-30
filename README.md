@@ -18,6 +18,10 @@ de pagos en FastAPI y desplegado en local con Docker.
    - [Fase 4: Trazas distribuidas con Tempo y OpenTelemetry](#-fase-4-trazas-distribuidas-con-tempo-y-opentelemetry)
    - [Fase 5: OTEL Collector, el router central](#-fase-5-otel-collector-el-router-central)
    - [Fase 6: Retención larga con Thanos y MinIO](#-fase-6-retención-larga-con-thanos-y-minio)
+   - [Fase 7: Storage persistente para Loki y Tempo en MinIO](#-fase-7-storage-persistente-para-loki-y-tempo-en-minio)
+   - [Fase 8: Alertas con Prometheus Alertmanager](#-fase-8-alertas-con-prometheus-alertmanager)
+   - [Fase 9: Segunda instancia de Prometheus y deduplicación real con Thanos](#-fase-9-segunda-instancia-de-prometheus-y-deduplicación-real-con-thanos)
+   - [Fase 10: Segundo servicio y trazas distribuidas](#-fase-10-segundo-servicio-y-trazas-distribuidas)
 6. [Correlación entre las tres señales](#6-correlacion-entre-las-tres-senales)
 7. [Métricas expuestas por la API](#7-metricas-expuestas-por-la-api)
 8. [Campos de log](#8-campos-de-log)
@@ -1256,6 +1260,184 @@ Prometheus --scraping--> Node Exporter / postgres_exporter / cAdvisor
 YouTube:
 - Canal **That DevOps Guy** (Thanos) -> https://www.youtube.com/@MarcelDempers/search?query=thanos
 - Canal **Grafana** (Thanos) -> https://www.youtube.com/@Grafana/search?query=thanos
+
+---
+
+### 🟤 Fase 7: Storage persistente para Loki y Tempo en MinIO
+
+**Concepto:** en las fases anteriores Loki y Tempo guardan sus datos en
+`/tmp` dentro del contenedor. Cada reinicio borra todo el histórico de logs
+y trazas. MinIO ya está levantado desde la Fase 6 para métricas. En esta
+fase extendemos su uso para que Loki y Tempo también persistan sus datos en
+MinIO, cerrando el círculo del storage distribuido.
+
+**¿Por qué importa?**
+
+Con storage local en `/tmp`:
+- Un `docker compose down` borra todos los logs y trazas
+- No hay forma de recuperar una traza de hace 3 días
+- El volumen de datos está limitado al disco del host sin gestión centralizada
+
+Con MinIO como backend:
+- Loki y Tempo sobreviven reinicios
+- El storage se gestiona en un único lugar (MinIO Console)
+- Preparado para migrar a S3 real en producción cambiando solo la config
+
+**Qué se hace:**
+- Crear buckets `loki` y `tempo` en MinIO (via `minio-init`)
+- Actualizar `loki/loki-config.yml` para usar S3/MinIO como backend
+- Actualizar `tempo/tempo-config.yml` para usar S3/MinIO como backend
+- Verificar que logs y trazas persisten tras un `docker compose down/up`
+
+**Estructura de buckets en MinIO tras esta fase:**
+```
+MinIO
+├── thanos/    # bloques TSDB de Prometheus (desde Fase 6)
+├── loki/      # chunks e índices de Loki
+└── tempo/     # bloques de trazas de Tempo
+```
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Loki S3 storage | https://grafana.com/docs/loki/latest/configure/storage/ |
+| Tempo S3 storage | https://grafana.com/docs/tempo/latest/configuration/s3/ |
+
+---
+
+### ⚪ Fase 8: Alertas con Prometheus Alertmanager
+
+**Concepto:** tener métricas sin alertas es solo la mitad del trabajo. En
+producción necesitas saber cuándo algo va mal sin estar mirando dashboards
+constantemente. Alertmanager recibe las alertas que dispara Prometheus y
+las enruta a los canales de notificación configurados (email, Slack, PagerDuty).
+
+**Arquitectura:**
+```
+Prometheus --evalúa reglas--> dispara alerta --> Alertmanager --> Slack/Email
+                                                              --> PagerDuty
+                                                              --> silencio/agrupación
+```
+
+**¿Qué es Alertmanager?**
+
+Alertmanager recibe alertas de Prometheus y aplica lógica de enrutamiento:
+agrupa alertas relacionadas para evitar spam, silencia alertas durante
+mantenimientos, inhibe alertas secundarias cuando hay un problema mayor,
+y enruta al canal correcto según labels (equipo, severidad, entorno).
+
+**Qué se hace:**
+- Levantar Alertmanager con config de enrutamiento
+- Definir reglas de alerta en Prometheus para la API de pagos:
+  - `PaymentApiDown`: la API no responde
+  - `HighPaymentErrorRate`: tasa de errores > umbral
+  - `SlowPaymentLatency`: p99 latencia > 500ms
+  - `OtelCollectorDown`: el Collector no exporta
+- Configurar notificaciones a un webhook de prueba (webhook.site o similar)
+- Verifica la alerta en Grafana -> Alerting
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Alertmanager docs | https://prometheus.io/docs/alerting/latest/alertmanager/ |
+| Alerting rules | https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/ |
+| Grafana Alerting | https://grafana.com/docs/grafana/latest/alerting/ |
+
+YouTube:
+- Canal **That DevOps Guy** (Alertmanager) -> https://www.youtube.com/@MarcelDempers/search?query=alertmanager
+- Canal **Grafana** (Alerting) -> https://www.youtube.com/@Grafana/search?query=alerting
+
+---
+
+### 🔵 Fase 9: Segunda instancia de Prometheus y deduplicación real con Thanos
+
+**Concepto:** en la Fase 6 configuramos la deduplicación de Thanos con
+`replica="prometheus-1"` pero nunca la hemos probado de verdad porque solo
+hay una instancia de Prometheus. En esta fase levantamos una segunda instancia
+(`replica="prometheus-2"`) scrapeando los mismos targets y verificamos que
+Thanos Query deduplica correctamente.
+
+**¿Por qué dos instancias de Prometheus?**
+
+En producción se usan dos instancias idénticas scrapeando los mismos targets
+para garantizar alta disponibilidad. Si una cae, la otra sigue recogiendo
+métricas. El problema es que Grafana vería las series duplicadas. Thanos Query
+resuelve esto: detecta que ambas instancias tienen el mismo `cluster` pero
+distinto `replica` y fusiona las series, devolviendo una sola.
+
+**Flujo con deduplicación:**
+```
+Prometheus-1 {cluster="local", replica="prometheus-1"} ---> Thanos Sidecar-1 ---> MinIO
+Prometheus-2 {cluster="local", replica="prometheus-2"} ---> Thanos Sidecar-2 ---> MinIO
+
+Grafana --> Thanos Query --> deduplica por replica --> 1 serie limpia
+```
+
+**Qué se hace:**
+- Añadir `prometheus-2` con `replica: prometheus-2` en `external_labels`
+- Añadir `thanos-sidecar-2` para la segunda instancia
+- Actualizar Thanos Query con el nuevo endpoint `--endpoint=thanos-sidecar-2:10901`
+- Verificar en Grafana que no hay series duplicadas
+- Simular caída de `prometheus-1` y verificar que los dashboards siguen funcionando
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| Thanos HA setup | https://thanos.io/tip/thanos/quick-tutorial.md/#ha-prometheus-with-thanos |
+| Thanos deduplication | https://thanos.io/tip/thanos/query.md/#deduplication |
+
+---
+
+### 🟢 Fase 10: Segundo servicio y trazas distribuidas
+
+**Concepto:** hasta ahora todas las trazas tienen un único servicio:
+`payment-api`. En producción los sistemas están formados por múltiples
+servicios que se llaman entre sí. Una traza distribuida recorre todos estos
+servicios con el mismo `trace_id`, permitiendo ver el flujo completo de una
+petición de extremo a extremo.
+
+**¿Qué es el context propagation?**
+
+Cuando `payment-api` llama a otro servicio, incluye el `trace_id` y `span_id`
+en las cabeceras HTTP (`traceparent` según el estándar W3C). El segundo
+servicio lee esas cabeceras, crea un nuevo span hijo del span original y lo
+envía al mismo Collector. Grafana Tempo reconstruye el árbol completo:
+
+```
+payment-api (span raíz)
+└── POST /payments (span)
+    └── fraud-service (span hijo en otro servicio)
+        └── db query (span nieto)
+```
+
+**Qué se hace:**
+- Crear `fraud-service` en Go con el SDK de OpenTelemetry para Go
+- `payment-api` llama a `fraud-service` antes de persistir el pago
+- Ambos servicios envían trazas al mismo OTEL Collector
+- Verificar en Grafana Tempo que una sola traza muestra spans de ambos servicios
+- Correlacionar con logs de ambos servicios via `trace_id`
+
+**¿Por qué Go?**
+
+Go es el lenguaje más común en el ecosistema de plataforma e infraestructura
+(Kubernetes, Prometheus, Grafana, Thanos están escritos en Go). Practicar OTel
+con Go es directamente aplicable al trabajo del día a día.
+
+**Para profundizar:**
+
+| Recurso | Enlace |
+|---|---|
+| OTel Go SDK | https://opentelemetry.io/docs/languages/go/ |
+| W3C Trace Context | https://www.w3.org/TR/trace-context/ |
+| Context propagation | https://opentelemetry.io/docs/concepts/context-propagation/ |
+| Distributed tracing patterns | https://opentelemetry.io/docs/concepts/signals/traces/ |
+
+YouTube:
+- Canal **opentelemetry** oficial (Go) -> https://www.youtube.com/@otel-official/search?query=go
+- Canal **Grafana** (distributed tracing) -> https://www.youtube.com/@Grafana/search?query=distributed+tracing
 
 ---
 
