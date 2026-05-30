@@ -1283,26 +1283,134 @@ Con MinIO como backend:
 - El storage se gestiona en un único lugar (MinIO Console)
 - Preparado para migrar a S3 real en producción cambiando solo la config
 
-**Qué se hace:**
-- Crear buckets `loki` y `tempo` en MinIO (via `minio-init`)
-- Actualizar `loki/loki-config.yml` para usar S3/MinIO como backend
-- Actualizar `tempo/tempo-config.yml` para usar S3/MinIO como backend
-- Verificar que logs y trazas persisten tras un `docker compose down/up`
+**¿Qué es el WAL y por qué necesita volumen persistente?**
+
+El WAL (Write-Ahead Log) es un buffer de escritura en disco que actúa como
+seguro ante caídas. Tanto Loki como Tempo escriben los datos entrantes al WAL
+antes de procesarlos. Si el proceso cae, el WAL permite recuperar los datos
+en vuelo en el próximo arranque.
+
+Sin volumen persistente el WAL vive en el contenedor y se pierde al hacer
+`docker compose down`. Con un volumen Docker el WAL sobrevive el reinicio y
+Loki/Tempo recuperan los datos que aún no habían llegado a MinIO.
+
+**Flujo completo de un log en Loki con MinIO:**
+```
+1. OTEL Collector -> Loki ingester
+2. Loki escribe en WAL (/loki_wal) para durabilidad inmediata
+3. Loki acumula en memoria hasta chunk_idle_period (5 min) o max_chunk_age (10 min)
+4. Loki flushea chunk comprimido a MinIO bucket "loki"
+5. TSDB shipper sube el índice a MinIO bucket "loki/index/"
+6. Tras reinicio: Loki lee el WAL y recupera datos en vuelo
+```
 
 **Estructura de buckets en MinIO tras esta fase:**
 ```
 MinIO
-├── thanos/    # bloques TSDB de Prometheus (desde Fase 6)
-├── loki/      # chunks e índices de Loki
-└── tempo/     # bloques de trazas de Tempo
+├── thanos/         # bloques TSDB de Prometheus (desde Fase 6)
+├── loki/
+│   ├── fake/       # chunks de logs (tenant "fake" con auth_enabled: false)
+│   ├── index/      # índice TSDB
+│   └── loki_cluster_seed.json
+└── tempo/          # bloques de trazas compilados
 ```
+
+**Qué se hace:**
+- Añadir buckets `loki` y `tempo` en `minio-init`
+- Actualizar `loki/loki-config.yml` para usar S3/MinIO como backend
+- Actualizar `tempo/tempo-config.yml` para usar S3/MinIO como backend
+- Añadir volúmenes persistentes para WAL de Loki y Tempo
+- Añadir `user: "0"` a Loki y Tempo por permisos de volumen
+
+**Ficheros modificados:**
+```
+docker-compose.yml          # minio-init añade buckets loki y tempo,
+                            # loki y tempo con user:0 y volúmenes WAL
+loki/loki-config.yml        # backend S3, flush config, WAL path
+tempo/tempo-config.yml      # backend S3
+```
+
+**Config Loki con MinIO:**
+
+La clave es usar el formato de endpoint explícito con `insecure: true` en vez
+de la URL `s3://`. El SDK de AWS que usa Loki trata el endpoint como región si
+usas el formato URL, lo que causa un HTTP 301 PermanentRedirect de MinIO:
+
+```yaml
+storage_config:
+  aws:
+    endpoint: minio:9000        # no usar s3://user:pass@host/bucket
+    bucketnames: loki
+    access_key_id: minioadmin
+    secret_access_key: minioadmin
+    s3forcepathstyle: true
+    region: us-east-1           # valor ficticio pero requerido por el SDK
+    insecure: true              # HTTP en vez de HTTPS
+```
+
+Configuración del ingester para flush frecuente (por defecto son 30 min y 2h,
+demasiado para un entorno de aprendizaje):
+
+```yaml
+ingester:
+  chunk_idle_period: 5m
+  max_chunk_age: 10m
+  chunk_retain_period: 1m
+  wal:
+    dir: /loki_wal
+    enabled: true
+```
+
+**Config Tempo con MinIO:**
+
+Tempo 3.0 con S3 es más directo que Loki. Solo cambia el backend:
+
+```yaml
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo
+      endpoint: minio:9000
+      access_key: minioadmin
+      secret_key: minioadmin
+      insecure: true
+    wal:
+      path: /tmp/tempo/wal
+```
+
+**Bugs encontrados durante la implementación:**
+
+- Loki con URL `s3://user:pass@minio:9000/loki` causaba HTTP 301 PermanentRedirect
+  porque el SDK de AWS extrae `minio:9000` como nombre de región -> fix: usar
+  endpoint explícito con `insecure: true` y `region: us-east-1`
+- Montar volumen en `/tmp/loki/wal` hacía que Docker creara `/tmp/loki` como
+  root, rompiendo los permisos del proceso Loki (uid 10001) para `/tmp/loki/tsdb-cache`
+  -> fix: mover el WAL a `/loki_wal` (ruta raíz, fuera de `/tmp/loki`)
+- Volumen Docker creado como root no escribible por Loki y Tempo -> fix: `user: "0"`
+  en ambos servicios, igual que Thanos Sidecar y Store en Fase 6
+
+**Al terminar esta fase tendrás:**
+```
+FastAPI --OTLP--> OTEL Collector --> Loki  --> MinIO (bucket loki)
+                               --> Tempo --> MinIO (bucket tempo)
+                               --> Prometheus <--> Thanos --> MinIO (bucket thanos)
+                                              Grafana
+```
+
+Los tres pilares del stack de observabilidad (métricas, logs, trazas) persisten
+en MinIO y sobreviven reinicios del stack completo.
+
+**URLs sin cambios:** las mismas de las fases anteriores.
 
 **Para profundizar:**
 
 | Recurso | Enlace |
 |---|---|
 | Loki S3 storage | https://grafana.com/docs/loki/latest/configure/storage/ |
+| Loki ingester config | https://grafana.com/docs/loki/latest/configure/#ingester |
 | Tempo S3 storage | https://grafana.com/docs/tempo/latest/configuration/s3/ |
+| Loki WAL | https://grafana.com/docs/loki/latest/operations/storage/wal/ |
 
 ---
 
