@@ -115,11 +115,13 @@ services:
   loki:
     image: grafana/loki:3.7.2
     container_name: loki
+    user: "0"
     ports:
       - "3100:3100"
     volumes:
-      - ./loki/loki-config.yml:/etc/loki/local-config.yaml
-    command: -config.file=/etc/loki/local-config.yaml
+      - ./loki/loki-config.yml:/etc/loki/config.yml
+      - loki_wal:/loki_wal
+    command: -config.file=/etc/loki/config.yml
     restart: unless-stopped
     mem_limit: 256m
     
@@ -229,7 +231,9 @@ services:
       sleep 5;
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb local/thanos --ignore-existing;
-      echo 'Bucket thanos creado';
+      mc mb local/loki --ignore-existing;
+      mc mb local/tempo --ignore-existing;
+      echo 'Buckets thanos, loki y tempo creados';
       exit 0;
       "
     restart: on-failure
@@ -239,3 +243,4 @@ volumes:
   prometheus_data:
   grafana_data:
   minio_data:
+  loki_wal:
