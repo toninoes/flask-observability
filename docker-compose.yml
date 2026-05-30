@@ -45,6 +45,8 @@ services:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.min-block-duration=2h"
+      - "--storage.tsdb.max-block-duration=2h"
       - "--web.enable-remote-write-receiver"
     restart: unless-stopped
     mem_limit: 512m
@@ -148,7 +150,92 @@ services:
     restart: unless-stopped
     mem_limit: 256m
 
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    mem_limit: 256m
+
+  thanos-sidecar:
+    image: quay.io/thanos/thanos:v0.41.0
+    container_name: thanos-sidecar
+    user: "0"
+    volumes:
+      - ./thanos/bucket-config.yml:/etc/thanos/bucket-config.yml
+      - prometheus_data:/prometheus
+    command:
+      - sidecar
+      - --tsdb.path=/prometheus
+      - --prometheus.url=http://prometheus:9090
+      - --objstore.config-file=/etc/thanos/bucket-config.yml
+      - --grpc-address=0.0.0.0:10901
+      - --http-address=0.0.0.0:10902
+    depends_on:
+      - prometheus
+      - minio
+    restart: unless-stopped
+    mem_limit: 128m
+
+  thanos-store:
+    image: quay.io/thanos/thanos:v0.41.0
+    container_name: thanos-store
+    volumes:
+      - ./thanos/bucket-config.yml:/etc/thanos/bucket-config.yml
+    command:
+      - store
+      - --data-dir=/tmp/thanos-store
+      - --objstore.config-file=/etc/thanos/bucket-config.yml
+      - --grpc-address=0.0.0.0:10901
+      - --http-address=0.0.0.0:10902
+    depends_on:
+      - minio
+    restart: unless-stopped
+    mem_limit: 128m
+
+  thanos-query:
+    image: quay.io/thanos/thanos:v0.41.0
+    container_name: thanos-query
+    ports:
+      - "10902:10902"
+    command:
+      - query
+      - --grpc-address=0.0.0.0:10901
+      - --http-address=0.0.0.0:10902
+      - --endpoint=thanos-sidecar:10901
+      - --endpoint=thanos-store:10901
+      - --query.replica-label=replica
+    depends_on:
+      - thanos-sidecar
+      - thanos-store
+    restart: unless-stopped
+    mem_limit: 128m
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb local/thanos --ignore-existing;
+      echo 'Bucket thanos creado';
+      exit 0;
+      "
+    restart: on-failure
+
 volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  minio_data:
